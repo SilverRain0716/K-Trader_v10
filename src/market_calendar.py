@@ -77,8 +77,13 @@ class MarketCalendar:
                 if resp.status_code == 200:
                     root = ET.fromstring(resp.text)
                     for item in root.findall(".//item"):
-                        if item.find("isHoliday").text == "Y":
-                            locdate = item.find("locdate").text
+                        # [Fix #7] find() 결과 None이면 AttributeError 방지
+                        holiday_tag = item.find("isHoliday")
+                        locdate_tag = item.find("locdate")
+                        if holiday_tag is None or locdate_tag is None:
+                            continue
+                        if holiday_tag.text == "Y":
+                            locdate = locdate_tag.text
                             dt = datetime.datetime.strptime(locdate, "%Y%m%d").date()
                             self.holidays.add(dt)
                             new_found = True

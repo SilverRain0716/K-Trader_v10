@@ -1357,7 +1357,8 @@ def run_ui():
         fh.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
         kt_logger.addHandler(fh)
 
-    app = QApplication(sys.argv)
+    # [Fix #6] 마법사 실행 후 QApplication 중복 생성 방지
+    app = QApplication.instance() or QApplication(sys.argv)
     app.setStyle("Fusion")
     win = TradingUI()
     win.show()

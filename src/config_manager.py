@@ -294,4 +294,5 @@ class ConfigManager:
 
     @config.setter
     def config(self, value):
-        self._config = copy.deepcopy(value)
+        # [Fix #8] 외부에서 불완전한 config dict가 들어와도 DEFAULT_CONFIG 기준으로 누락 키 보정
+        self._config = self._deep_merge(DEFAULT_CONFIG, value)

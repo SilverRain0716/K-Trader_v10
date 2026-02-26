@@ -103,7 +103,7 @@ class TradingEngine(QMainWindow):
         self.deposit_total = 0
         self.orderable_amount = 0
         self.withdrawable_amount = 0
-        self._deposit_last_ok_ts = None
+        self._deposit_last_ok_ts = time.time()  # [Fix #4] None → TypeError 방지, 초기값은 현재 시각
         self.locked_deposit = 0
         self.today_realized_profit = self.db.get_today_trade_summary().get('realized_profit', 0)
         self.broker_today_realized_profit = None
@@ -128,6 +128,7 @@ class TradingEngine(QMainWindow):
         self.is_trading = False
         self._cond_reregistered_date = None   # 장 시작 시 조건식 재등록 1회 플래그
         self._last_deposit_refresh_ts = 0     # 예수금 주기적 갱신 타이머
+        self._shutdown_report_sent_date = None  # [Fix #1] 마감 리포트 중복 발송 방지
 
         # [Fix #3] Notifier는 로그인 후 is_mock 확정되면 세팅
         self.notifier = Notifier(self.secrets)
@@ -369,6 +370,20 @@ class TradingEngine(QMainWindow):
         self.ipc_client.send_state(state)
         self.db.write_engine_state(state)
 
+        # [Fix #1] 장 마감 자동 리포트 & 종료 — shutdown_opt 무관하게 항상 리포트 먼저 전송
+        try:
+            today = datetime.date.today().isoformat()
+            if self.calendar.is_eod_shutdown() and self._shutdown_report_sent_date != today:
+                self._shutdown_report_sent_date = today
+                logger.info("📊 [마감] 장 마감 감지 → 마감 리포트 전송")
+                self._send_daily_report("장 마감 자동 종료")
+                shutdown_opt = self.config_mgr.get("shutdown_opt", "프로그램 종료 안함")
+                if shutdown_opt != "프로그램 종료 안함":
+                    logger.info(f"🔴 [마감] shutdown_opt='{shutdown_opt}' → 엔진 종료 시작")
+                    self._execute_shutdown("장 마감 자동 종료")
+        except Exception as e:
+            logger.error(f"❌ [마감] EOD 감지 오류: {e}")
+
         now = time.time()
         stale_pending = [code for code, info in self._pending_buy.items() if now - info['timestamp'] > 10.0]
         for code in stale_pending:
@@ -382,6 +397,23 @@ class TradingEngine(QMainWindow):
             del self._pending_buy[code]
 
     # ── 알림 및 검증 ──────────────────────────────────
+    def _send_daily_report(self, reason: str = "장 마감 자동 리포트"):
+        """
+        [Fix #1] 마감 리포트 전송 (shutdown_opt 무관하게 항상 실행).
+        _shutdown_report_sent_date로 하루 1회 중복 발송 방지.
+        """
+        summary = self.db.get_today_trade_summary()
+        self.notifier.notify_shutdown_report(
+            reason=reason, deposit=self.deposit,
+            realized_profit=self.today_realized_profit,
+            unrealized_profit=self._calc_unrealized_profit(),
+            portfolio=self.portfolio,
+            buy_count=summary['buy_count'], buy_amount=summary['buy_amount'],
+            sell_count=summary['sell_count'], sell_amount=summary['sell_amount'],
+            wins=summary['wins'], losses=summary['losses'],
+            is_mock=self.is_mock
+        )
+
     def _send_hourly_report(self):
         if not self.is_trading or not self.calendar.is_regular_market():
             return
@@ -511,16 +543,11 @@ class TradingEngine(QMainWindow):
             self._execute_shutdown(reason)
 
     def _execute_shutdown(self, reason: str):
-        summary = self.db.get_today_trade_summary()
-        # [Fix #3] is_mock 전달
-        self.notifier.notify_shutdown_report(
-            reason=reason, deposit=self.deposit, realized_profit=self.today_realized_profit,
-            unrealized_profit=self._calc_unrealized_profit(), portfolio=self.portfolio,
-            buy_count=summary['buy_count'], buy_amount=summary['buy_amount'],
-            sell_count=summary['sell_count'], sell_amount=summary['sell_amount'],
-            wins=summary['wins'], losses=summary['losses'],
-            is_mock=self.is_mock
-        )
+        # [Fix #1] _sync_routine에서 이미 리포트를 보냈으면 중복 발송하지 않음
+        today = datetime.date.today().isoformat()
+        if getattr(self, '_shutdown_report_sent_date', None) != today:
+            self._shutdown_report_sent_date = today
+            self._send_daily_report(reason)
         self.notifier.drain_and_shutdown(timeout=15)
         self._save_bot_state()
         self.ipc_client.stop()
