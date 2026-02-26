@@ -1,0 +1,43 @@
+# 시크릿 / 설정 (절대 커밋 금지)
+config/secrets.json
+config/secrets.enc
+config/bot_config.json
+config/holidays.json
+
+# 런타임 데이터
+data/
+logs/
+reports/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+*.spec
+
+# PyInstaller 빌드 산출물
+dist/
+build/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# 빈 폴더 유지용 .gitkeep은 포함
+!config/.gitkeep
+!data/.gitkeep
+!logs/.gitkeep
+!reports/.gitkeep
+!assets/.gitkeep
