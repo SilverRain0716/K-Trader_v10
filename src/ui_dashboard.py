@@ -76,6 +76,7 @@ class TradingUI(QMainWindow):
         self._engine_crash_count = 0
         self._max_engine_restarts = 5
         self._last_loaded_conditions = None
+        self._ui_pre_market_restart_date = None  # 8:50 UI측 강제 재시작 하루 1회 플래그
 
         self.setWindowTitle(f"K-Trader Master v{__version__}")
         self.setGeometry(150, 100, 1150, 950)
@@ -197,6 +198,47 @@ class TradingUI(QMainWindow):
                 self._send_log("❌ 엔진 재시작 한도 초과. 수동 확인이 필요합니다.")
                 self.notifier.notify_error("엔진 재시작 한도 초과", "수동 확인이 필요합니다.")
                 self.engine_proc = None
+
+        # ── 8:50 UI측 최종 안전망 ──────────────────────────────────────────
+        # 엔진이 죽어서 재시작 한도를 소진했거나, 엔진이 살아있지만 키움 LOGIN_FAILED 상태가
+        # 지속될 경우를 대비해 UI에서도 8:50에 강제로 엔진을 재시작합니다.
+        try:
+            import datetime as _dt
+            now_dt = _dt.datetime.now()
+            today = _dt.date.today().isoformat()
+            if (now_dt.hour == 8 and now_dt.minute == 50
+                    and self._ui_pre_market_restart_date != today):
+                need_restart = False
+
+                # 케이스 1: 엔진 프로세스가 아예 없음 (크래시 후 재시작 한도 소진 등)
+                if self.engine_proc is None:
+                    need_restart = True
+                    reason = "엔진 프로세스 없음"
+                # 케이스 2: 엔진은 살아있지만 키움 연결 실패 상태
+                elif self.engine_status in ("LOGIN_FAILED", "LOGGING_IN"):
+                    need_restart = True
+                    reason = f"키움 미연결 상태 ({self.engine_status})"
+
+                if need_restart:
+                    self._ui_pre_market_restart_date = today  # 하루 1회만 실행
+                    logger.warning(f"🔔 [UI] 08:50 안전망 발동: {reason} → 엔진 강제 재시작")
+                    self._send_log(f"🔔 [08:50 안전망] {reason} → 엔진 강제 재시작")
+                    self.notifier.discord(f"🔔 [UI 08:50 안전망] {reason} → 엔진 강제 재시작 시도")
+                    # 기존 프로세스 강제 종료 후 재시작
+                    if self.engine_proc:
+                        try:
+                            self.engine_proc.kill()
+                        except Exception:
+                            pass
+                        self.engine_proc = None
+                    self._engine_crash_count = 0   # 재시작 카운터 초기화
+                    self._last_loaded_conditions = None
+                    self._spawn_engine()
+                else:
+                    self._ui_pre_market_restart_date = today  # 정상 상태도 하루 1회 기록
+                    logger.info(f"✅ [UI] 08:50 점검: 엔진 정상 ({self.engine_status})")
+        except Exception as e:
+            logger.error(f"❌ [UI 8:50 안전망] 오류: {e}")
 
     # ── secrets.json 연동 헬퍼 ──────────────────────
     def _get_account_password(self) -> str:
