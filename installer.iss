@@ -8,7 +8,6 @@ AppPublisher=K-Trader
 DefaultDirName={autopf}\K-Trader
 DefaultGroupName=K-Trader Master
 OutputBaseFilename=K-Trader_Setup_v7.5
-SetupIconFile=assets\icon.ico
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
