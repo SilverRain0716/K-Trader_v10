@@ -71,6 +71,7 @@ class TradingUI(QMainWindow):
         self.engine_status = "OFFLINE"
         self.is_trading_started = False
         self.engine_proc = None
+        self._spawn_pending = False  # QTimer.singleShot 중복 예약 방지
         self.default_conditions = self.config_mgr.get("default_conditions", ["나의급등주02"])
 
         self._engine_crash_count = 0
@@ -147,6 +148,12 @@ class TradingUI(QMainWindow):
         super().changeEvent(event)
 
     def _spawn_engine(self):
+        # [Fix] 엔진이 이미 살아있으면 중복 스폰 방지
+        self._spawn_pending = False
+        if self.engine_proc and self.engine_proc.poll() is None:
+            logger.debug("[UI] _spawn_engine 호출 무시: 엔진 이미 실행 중")
+            return
+
         main_script = os.path.join(BASE_DIR, "main.py")
         try:
             self.engine_proc = subprocess.Popen(
@@ -193,7 +200,10 @@ class TradingUI(QMainWindow):
                 )
                 self._last_loaded_conditions = None
                 self.engine_proc = None
-                QTimer.singleShot(delay_secs * 1000, self._spawn_engine)
+                # [Fix] 이미 재시작 타이머가 예약된 경우 중복 예약 방지
+                if not self._spawn_pending:
+                    self._spawn_pending = True
+                    QTimer.singleShot(delay_secs * 1000, self._spawn_engine)
             else:
                 self._send_log("❌ 엔진 재시작 한도 초과. 수동 확인이 필요합니다.")
                 self.notifier.notify_error("엔진 재시작 한도 초과", "수동 확인이 필요합니다.")
