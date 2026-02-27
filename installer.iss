@@ -34,15 +34,13 @@ Name: "{app}\logs"
 Name: "{app}\reports"
 
 [Icons]
+; 시작 메뉴
 Name: "{group}\K-Trader Master"; Filename: "{app}\K-Trader.exe"
-Name: "{group}\설정 마법사"; Filename: "{app}\K-Trader Setup Wizard.exe"
-Name: "{commondesktop}\K-Trader Master"; Filename: "{app}\K-Trader.exe"; Tasks: desktopicon
 Name: "{group}\사용 가이드"; Filename: "{app}\docs\K-Trader_Guide.pdf"
 Name: "{group}\K-Trader 제거"; Filename: "{uninstallexe}"
-
-[Tasks]
-Name: "desktopicon"; Description: "바탕화면에 바로가기 생성"; GroupDescription: "추가 작업:"
+; 바탕화면 바로가기 (항상 생성, 체크박스 없음)
+Name: "{commondesktop}\K-Trader Master"; Filename: "{app}\K-Trader.exe"
 
 [Run]
-; 설치 완료 후 설정 마법사 실행 (secrets 없으면)
-Filename: "{app}\K-Trader Setup Wizard.exe"; Description: "설정 마법사 실행"; Flags: postinstall nowait skipifsilent
+; 설치 완료 후 설정 마법사 자동 실행 (체크박스 없이 항상 실행)
+Filename: "{app}\K-Trader Setup Wizard.exe"; Flags: nowait

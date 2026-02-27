@@ -7,7 +7,12 @@ import os
 import subprocess
 
 # 프로젝트 루트를 path에 추가하여 어디서 실행하든 절대 경로 보장
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+# PyInstaller --onedir 빌드 시 __file__은 _internal 폴더 안을 가리키므로
+# sys.executable(K-Trader.exe) 기준의 폴더를 사용합니다.
+if getattr(sys, 'frozen', False):
+    BASE_DIR = os.path.dirname(sys.executable)
+else:
+    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, BASE_DIR)
 
 # 필수 디렉토리 생성

@@ -440,22 +440,21 @@ def run_wizard():
 
 
 if __name__ == "__main__":
-    import subprocess
-    from PyQt5.QtWidgets import QDialog
+    from PyQt5.QtWidgets import QDialog, QMessageBox
 
     app = QApplication(sys.argv)
     wizard = SetupWizard()
     result = wizard.exec_()   # QDialog.Accepted(1)=완료, 0=취소
 
     if result == QDialog.Accepted:
-        # 설정 완료 → 같은 폴더의 K-Trader.exe 자동 실행
-        kt_exe = os.path.join(BASE_DIR, "K-Trader.exe")
-        if os.path.exists(kt_exe):
-            subprocess.Popen([kt_exe])
-        else:
-            # 개발 환경에서는 main.py 직접 실행
-            main_py = os.path.join(BASE_DIR, "main.py")
-            if os.path.exists(main_py):
-                subprocess.Popen([sys.executable, main_py])
+        # 설정 완료 메시지 표시 (K-Trader.exe는 자동 실행 안 함)
+        msg = QMessageBox()
+        msg.setWindowTitle("설정 완료")
+        msg.setText(
+            "✅ 초기 설정이 완료되었습니다!\n\n"
+            "바탕화면의 'K-Trader Master' 아이콘으로 프로그램을 실행하세요."
+        )
+        msg.setIcon(QMessageBox.Information)
+        msg.exec_()
 
     sys.exit(0)
