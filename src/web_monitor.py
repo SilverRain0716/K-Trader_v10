@@ -23,6 +23,7 @@ except ImportError:
 
 from src.database import Database
 from src.market_calendar import MarketCalendar
+from src.utils import resolve_db_path  # [Fix #5] utils와 동일한 DB 경로 함수 사용
 
 logger = logging.getLogger("ktrader")
 
@@ -30,7 +31,9 @@ BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA_DIR = os.path.join(BASE_DIR, "data")
 
 app = Flask(__name__)
-db = Database(os.path.join(DATA_DIR, "ktrader_history.db"))
+# [Fix #5] 하드코딩 경로 대신 resolve_db_path()로 일관된 DB 위치 사용
+#          engine.py와 web_monitor.py가 동일한 DB 파일을 바라보도록 통일.
+db = Database(resolve_db_path(BASE_DIR))
 calendar = MarketCalendar()
 
 # ── HTML 템플릿 (단일 파일) ──────────────────────

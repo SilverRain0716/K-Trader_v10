@@ -31,6 +31,24 @@ class MarketCalendar:
         if not self.holidays:
             self._set_default_holidays(curr_year)
 
+    # [Fix #7] 2025~2030년 음력 명절 양력 변환 하드코딩 테이블.
+    # 음력은 해마다 날짜가 달라 자동 계산이 어려우므로 테이블 방식 사용.
+    # 설날 연휴 3일(전날·당일·다음날), 추석 연휴 3일 포함.
+    _LUNAR_HOLIDAYS = {
+        2025: [(1,  28), (1,  29), (1,  30),           # 설날 연휴
+               (10,  5), (10,  6), (10,  7)],           # 추석 연휴
+        2026: [(2,  16), (2,  17), (2,  18),            # 설날 연휴
+               (9,  24), (9,  25), (9,  26)],           # 추석 연휴
+        2027: [(2,   5), (2,   6), (2,   7),            # 설날 연휴
+               (9,  14), (9,  15), (9,  16)],           # 추석 연휴
+        2028: [(1,  25), (1,  26), (1,  27),            # 설날 연휴
+               (10,  2), (10,  3), (10,  4)],           # 추석 연휴
+        2029: [(2,  12), (2,  13), (2,  14),            # 설날 연휴
+               (9,  21), (9,  22), (9,  23)],           # 추석 연휴
+        2030: [(2,   2), (2,   3), (2,   4),            # 설날 연휴
+               (9,  11), (9,  12), (9,  13)],           # 추석 연휴
+    }
+
     def _set_default_holidays(self, year: int):
         defaults = [
             (1, 1), (3, 1), (5, 5), (6, 6), (8, 15), (10, 3), (10, 9), (12, 25)
@@ -38,6 +56,14 @@ class MarketCalendar:
         for m, d in defaults:
             self.holidays.add(datetime.date(year, m, d))
         self.holidays.add(datetime.date(year, 12, 31))
+
+        # [Fix #7] 음력 명절(설날·추석 연휴) 추가 — API 키 없을 때도 적용
+        for m, d in self._LUNAR_HOLIDAYS.get(year, []):
+            self.holidays.add(datetime.date(year, m, d))
+        if self._LUNAR_HOLIDAYS.get(year):
+            logger.info(f"📅 [캘린더] {year}년 음력 명절 {len(self._LUNAR_HOLIDAYS[year])}일 기본 목록에 추가됨")
+        else:
+            logger.warning(f"⚠️ [캘린더] {year}년 음력 명절 테이블 미등록 — API 키로 갱신 권장")
 
     def _load_cache(self):
         if os.path.exists(self.cache_path):
@@ -156,13 +182,17 @@ class MarketCalendar:
     #  [개선 #3] 엔진/UI에서 호출하는 누락 메서드 추가
     # ══════════════════════════════════════════════════════════
 
-    def is_trading_allowed(self, now: datetime.datetime = None) -> bool:
+    def is_trading_allowed(self, now=None) -> bool:
         """
         매매 허용 시간인지 판단.
         정규장(09:00~15:20) 동안만 신규 진입을 허용합니다.
         동시호가(15:20~15:30) 이후에는 신규 진입 불가.
+        datetime.datetime 또는 datetime.date 모두 허용.
         """
         now = now or datetime.datetime.now()
+        # [검수 Fix] datetime.date가 전달되면 datetime.datetime으로 변환
+        if isinstance(now, datetime.date) and not isinstance(now, datetime.datetime):
+            now = datetime.datetime(now.year, now.month, now.day)
         if not self.is_market_day(now.date()):
             return False
 
@@ -174,12 +204,14 @@ class MarketCalendar:
         # 정규장 시간 내에서만 매매 허용 (15:15까지 — 타임컷 5분 전 여유)
         return datetime.time(start_h, 0) <= curr_time < datetime.time(end_h, 15)
 
-    def is_eod_timecut(self, now: datetime.datetime = None) -> bool:
+    def is_eod_timecut(self, now=None) -> bool:
         """
         타임컷(일괄 청산) 시점인지 판단.
         기본: 15:15 (지연일: 16:15)
         """
         now = now or datetime.datetime.now()
+        if isinstance(now, datetime.date) and not isinstance(now, datetime.datetime):
+            now = datetime.datetime(now.year, now.month, now.day)
         if not self.is_market_day(now.date()):
             return False
 
@@ -189,12 +221,14 @@ class MarketCalendar:
 
         return now.hour == cut_h and cut_m <= now.minute < cut_m + 5
 
-    def is_eod_shutdown(self, now: datetime.datetime = None) -> bool:
+    def is_eod_shutdown(self, now=None) -> bool:
         """
         장 마감 후 엔진 종료 시점인지 판단.
         기본: 15:40 (지연일: 16:40) — 장후 시간외 처리가 완료될 충분한 여유 확보
         """
         now = now or datetime.datetime.now()
+        if isinstance(now, datetime.date) and not isinstance(now, datetime.datetime):
+            now = datetime.datetime(now.year, now.month, now.day)
         if not self.is_market_day(now.date()):
             return False
 

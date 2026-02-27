@@ -5,9 +5,17 @@ K-Trader Master — 첫 실행 설정 마법사 (Setup Wizard)
 import sys
 import os
 import json
-import winreg
 import webbrowser
 import requests
+
+# [Fix #8] winreg는 Windows 전용 모듈이므로 조건부 import 처리.
+# 키움 OpenAPI가 Windows 전용이라 실제 매매는 Windows에서만 동작하지만,
+# 백테스트·웹모니터 등 부분 실행 환경(Linux/Mac)에서도 import 오류 방지.
+try:
+    import winreg
+    _WINREG_AVAILABLE = True
+except ImportError:
+    _WINREG_AVAILABLE = False
 
 from PyQt5.QtWidgets import (
     QApplication, QWizard, QWizardPage, QVBoxLayout, QHBoxLayout,
@@ -30,6 +38,8 @@ os.makedirs(CONFIG_DIR, exist_ok=True)
 
 def check_kiwoom_installed() -> bool:
     """레지스트리에서 키움 OpenAPI 설치 여부 확인."""
+    if not _WINREG_AVAILABLE:
+        return False  # Windows가 아니면 설치 불가
     try:
         key = winreg.OpenKey(winreg.HKEY_CLASSES_ROOT, "KHOPENAPI.KHOpenAPICtrl.1")
         winreg.CloseKey(key)

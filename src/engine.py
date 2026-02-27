@@ -217,7 +217,7 @@ class TradingEngine(QMainWindow):
         path = os.path.join(get_user_data_dir(), "bot_state.json")
         try:
             os.makedirs(os.path.dirname(path), exist_ok=True)
-            codes = [c for c, d in self.portfolio.items() if not d.get('is_manual', False)]
+            codes = [c for c, d in list(self.portfolio.items()) if not d.get('is_manual', False)]  # [Fix #4]
             with open(path, "w", encoding="utf-8") as f:
                 json.dump({
                     "bot_bought_codes": codes,
@@ -229,7 +229,7 @@ class TradingEngine(QMainWindow):
 
     def _calc_unrealized_profit(self) -> int:
         unrealized = 0
-        for code, data in self.portfolio.items():
+        for code, data in list(self.portfolio.items()):  # [Fix #4]
             if data.get('qty', 0) > 0 and data.get('buy_price', 0) > 0:
                 unrealized += calc_sell_cost(data['buy_price'], data['current_price'], data['qty'], self.is_mock)
         return unrealized
@@ -261,18 +261,30 @@ class TradingEngine(QMainWindow):
             sys.exit(0)
 
         # 장 시작 알림(엔진 기준, 하루 1회) + 조건식 재등록 + 예수금 갱신
+        # [Fix #2] 각 단계를 독립 try-except로 분리하여, 한 단계 실패 시에도
+        #          나머지 단계(특히 예수금 갱신)가 반드시 실행되도록 수정.
         try:
             phase = self.calendar.get_market_phase()
             today = datetime.date.today().isoformat()
+        except Exception as e:
+            logger.error(f"❌ [sync] 마켓 페이즈 조회 오류: {e}")
+            phase = self._last_market_phase  # 직전 상태를 fallback으로 유지
+            today = datetime.date.today().isoformat()
 
-            # PRE_MARKET → REGULAR 전환 감지
-            if self._last_market_phase == "PRE_MARKET" and phase == "REGULAR":
+        # PRE_MARKET → REGULAR 전환 감지
+        if self._last_market_phase == "PRE_MARKET" and phase == "REGULAR":
+
+            # ① 장 시작 알림 (독립 try)
+            try:
                 if self._market_open_notified_date != today:
                     self._market_open_notified_date = today
                     self.notifier.discord(f"🟢 [장 시작] 정규장이 시작되었습니다. ({time.strftime('%H:%M:%S')})")
+            except Exception as e:
+                logger.error(f"❌ [sync] 장 시작 알림 오류: {e}")
 
-                # [Fix C] 장 시작 시 조건식 재등록 (하루 1회)
-                # 장 시작 전에 등록한 실시간 조건검색은 서버 세션 갱신으로 끊길 수 있습니다.
+            # ② 조건식 재등록 (독립 try — 실패해도 예수금 갱신은 반드시 진행)
+            # [Fix C] 장 시작 전에 등록한 실시간 조건검색은 서버 세션 갱신으로 끊길 수 있습니다.
+            try:
                 if self._cond_reregistered_date != today and self.is_trading and self.active_conditions:
                     self._cond_reregistered_date = today
                     logger.info(f"🔄 [조건식] 장 시작 전환 감지 → 조건식 {len(self.active_conditions)}개 재등록")
@@ -283,21 +295,33 @@ class TradingEngine(QMainWindow):
                                                        "0300", cond['name'], int(cond['idx']))
                             except Exception:
                                 pass
-                            self.kiwoom.dynamicCall("SendCondition(QString, QString, int, int)",
-                                                   self._next_real_screen(), cond['name'], int(cond['idx']), 1)
-                            logger.info(f"  ✅ 재등록: {cond['name']} (idx={cond['idx']})")
+                            try:
+                                self.kiwoom.dynamicCall("SendCondition(QString, QString, int, int)",
+                                                       self._next_real_screen(), cond['name'], int(cond['idx']), 1)
+                                logger.info(f"  ✅ 재등록: {cond['name']} (idx={cond['idx']})")
+                            except Exception as e:
+                                logger.error(f"  ❌ 조건식 재등록 실패: {cond['name']} — {e}")
+            except Exception as e:
+                logger.error(f"❌ [sync] 조건식 재등록 오류: {e}")
 
-                # [Fix D] 장 시작 시 예수금 즉시 갱신
+            # ③ 장 시작 시 예수금 즉시 갱신 (독립 try — 항상 실행)
+            # [Fix D] 장 시작 시 예수금 즉시 갱신
+            try:
                 if self.account and self.account_password:
                     self.tr_scheduler.request_tr(
                         rqname="예수금조회", trcode="opw00001", next_str=0, screen_no=self._next_tr_screen(),
                         inputs=self._build_account_inputs({"조회구분": "1"})
                     )
                     self._last_deposit_refresh_ts = time.time()
+            except Exception as e:
+                logger.error(f"❌ [sync] 장 시작 예수금 갱신 오류: {e}")
 
-            self._last_market_phase = phase
+        # 상태 업데이트는 항상 실행 (try 바깥)
+        self._last_market_phase = phase
 
-            # [Fix D] 장중 5분 간격 예수금 자동 갱신
+        # ④ 장중 5분 간격 예수금 자동 갱신 (독립 try)
+        # [Fix D] 장중 5분 간격 예수금 자동 갱신
+        try:
             if phase == "REGULAR" and self.account and self.account_password:
                 if time.time() - self._last_deposit_refresh_ts > 300:
                     self._last_deposit_refresh_ts = time.time()
@@ -307,7 +331,7 @@ class TradingEngine(QMainWindow):
                     )
                     logger.debug("🔄 [예수금] 정기 갱신 요청 (5분 주기)")
         except Exception as e:
-            logger.error(f"❌ [sync] 장 전환/예수금 갱신 오류: {e}")
+            logger.error(f"❌ [sync] 정기 예수금 갱신 오류: {e}")
 
         # 예수금/주문가능/출금가능 표시값 보정(항상 내부 상태와 일치하도록)
         try:
@@ -324,7 +348,7 @@ class TradingEngine(QMainWindow):
         now_ts = time.time()
         price_stale_codes = []
         try:
-            for c, d in self.portfolio.items():
+            for c, d in list(self.portfolio.items()):  # [Fix #4] list()로 복사하여 반복 중 dict 변경 방어
                 if d.get('qty', 0) > 0:
                     ts = d.get('last_price_ts')
                     if not ts or (now_ts - float(ts)) > 5.0:
@@ -791,7 +815,7 @@ class TradingEngine(QMainWindow):
             return
 
         config = self.config_mgr.config
-        holding_count = len([c for c, d in self.portfolio.items() if d['qty'] > 0])
+        holding_count = len([c for c, d in list(self.portfolio.items()) if d['qty'] > 0])  # [Fix #4]
         max_hold = config.get("max_hold", 5)
         if holding_count >= max_hold:
             reason = f"보유한도 {holding_count}/{max_hold}"
