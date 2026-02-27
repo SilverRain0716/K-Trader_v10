@@ -17,7 +17,13 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QFont, QPixmap
 
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# PyInstaller --onefile 로 빌드 시 __file__이 임시 폴더를 가리키므로
+# sys.executable 기준으로 실제 exe가 있는 폴더를 BASE_DIR로 사용합니다.
+if getattr(sys, 'frozen', False):
+    BASE_DIR = os.path.dirname(sys.executable)
+else:
+    BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
 CONFIG_DIR = os.path.join(BASE_DIR, "config")
 os.makedirs(CONFIG_DIR, exist_ok=True)
 
@@ -434,7 +440,22 @@ def run_wizard():
 
 
 if __name__ == "__main__":
+    import subprocess
+    from PyQt5.QtWidgets import QDialog
+
     app = QApplication(sys.argv)
     wizard = SetupWizard()
-    wizard.show()
-    sys.exit(app.exec_())
+    result = wizard.exec_()   # QDialog.Accepted(1)=완료, 0=취소
+
+    if result == QDialog.Accepted:
+        # 설정 완료 → 같은 폴더의 K-Trader.exe 자동 실행
+        kt_exe = os.path.join(BASE_DIR, "K-Trader.exe")
+        if os.path.exists(kt_exe):
+            subprocess.Popen([kt_exe])
+        else:
+            # 개발 환경에서는 main.py 직접 실행
+            main_py = os.path.join(BASE_DIR, "main.py")
+            if os.path.exists(main_py):
+                subprocess.Popen([sys.executable, main_py])
+
+    sys.exit(0)
