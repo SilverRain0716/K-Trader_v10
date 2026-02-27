@@ -179,13 +179,20 @@ class TradingUI(QMainWindow):
             logger.warning(f"⚠️ [UI] 엔진 프로세스 사망 감지 (exit={exit_code})")
             if self._engine_crash_count < self._max_engine_restarts:
                 self._engine_crash_count += 1
-                self._send_log(f"⚠️ 엔진 크래시 감지! 자동 재시작 ({self._engine_crash_count}/{self._max_engine_restarts})")
+                # 지수 백오프: 1회→10초, 2회→20초, 3회→40초, 4~→60초 (키움 점검 대응)
+                delay_secs = min(10 * (2 ** (self._engine_crash_count - 1)), 60)
+                self._send_log(
+                    f"⚠️ 엔진 크래시 감지! {delay_secs}초 후 재시작 "
+                    f"({self._engine_crash_count}/{self._max_engine_restarts})"
+                )
                 self.notifier.notify_error(
                     "엔진 크래시 감지",
-                    f"자동 재시작 시도 ({self._engine_crash_count}/{self._max_engine_restarts})"
+                    f"{delay_secs}초 후 자동 재시작 시도 "
+                    f"({self._engine_crash_count}/{self._max_engine_restarts})"
                 )
                 self._last_loaded_conditions = None
-                self._spawn_engine()
+                self.engine_proc = None
+                QTimer.singleShot(delay_secs * 1000, self._spawn_engine)
             else:
                 self._send_log("❌ 엔진 재시작 한도 초과. 수동 확인이 필요합니다.")
                 self.notifier.notify_error("엔진 재시작 한도 초과", "수동 확인이 필요합니다.")

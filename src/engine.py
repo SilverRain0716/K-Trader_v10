@@ -95,6 +95,10 @@ class TradingEngine(QMainWindow):
         # 상태 변수
         self.current_status = "LOGGING_IN"
         self.is_mock = False  # 모의투자 여부 (로그인 시 자동 감지)
+        self._reconnect_count = 0          # 키움 재연결 시도 횟수
+        self._reconnect_timer = QTimer(self)
+        self._reconnect_timer.setSingleShot(True)
+        self._reconnect_timer.timeout.connect(self._do_reconnect)
         
         self.account = ""
         self.account_password = ""  # [Fix #2] 비밀번호 저장용
@@ -564,6 +568,8 @@ class TradingEngine(QMainWindow):
             
             mode_text = "🔵 [모의투자]" if self.is_mock else "🔴 [실계좌]"
             logger.info(f"✅ [엔진] 키움증권 로그인 성공 {mode_text}")
+            self._reconnect_count = 0   # 재연결 성공 시 카운터 초기화
+            self._reconnect_timer.stop()
 
             # [Fix #3] 로그인 시 모의/실계좌 구분 메시지
             self.notifier.discord(
@@ -590,7 +596,30 @@ class TradingEngine(QMainWindow):
                 pass
         else:
             self.current_status = "LOGIN_FAILED"
-            self.notifier.notify_error("키움증권 로그인 실패", f"에러 코드: {err_code}")
+            # 지수 백오프: 1회→30초, 2회→60초, 3회~→120초 후 재연결 시도
+            delay_secs = min(30 * (2 ** min(self._reconnect_count, 2)), 120)
+            self._reconnect_count += 1
+            logger.warning(
+                f"⚠️ [엔진] 키움 연결 실패/단절 (err={err_code}, "
+                f"재연결 {self._reconnect_count}회차, {delay_secs}초 후 시도)"
+            )
+            self.notifier.notify_error(
+                "키움증권 연결 단절",
+                f"에러 코드: {err_code}\n{delay_secs}초 후 자동 재연결을 시도합니다."
+            )
+            self._reconnect_timer.start(delay_secs * 1000)
+
+    def _do_reconnect(self):
+        """키움 단절 후 지연 재연결 시도."""
+        logger.info(f"🔄 [엔진] 키움 재연결 시도 ({self._reconnect_count}회차)...")
+        try:
+            self.kiwoom.dynamicCall("CommConnect()")
+        except Exception as e:
+            logger.error(f"❌ [엔진] CommConnect 재시도 실패: {e}")
+            # 실패하면 다시 대기 후 재시도 (최대 120초)
+            delay_secs = min(30 * (2 ** min(self._reconnect_count, 2)), 120)
+            self._reconnect_count += 1
+            self._reconnect_timer.start(delay_secs * 1000)
 
     def _on_condition_ver(self, ret, msg):
         if ret == 1:
