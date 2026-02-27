@@ -47,7 +47,8 @@ class IntroPage(QWizardPage):
             "이 마법사는 K-Trader를 실행하기 위해 필요한 설정을 도와드립니다.\n\n"
             "다음 정보를 준비해주세요:\n"
             "  1. 키움증권 OpenAPI 설치 (미설치 시 안내해드립니다)\n"
-            "  2. 키움증권 계좌번호 및 비밀번호\n"
+            "  2. 프로그램 자동매매에 사용할 지정계좌 번호 및 비밀번호\n"
+            "     (계좌가 여러 개인 경우 지정계좌만 자동매매, 나머지는 조회 전용)\n"
             "  3. 디스코드 웹훅 URL (선택사항, 알림 수신용)\n\n"
             "모든 정보는 암호화되어 로컬에만 저장됩니다."
         )
@@ -142,14 +143,16 @@ class AccountPage(QWizardPage):
     def __init__(self):
         super().__init__()
         self.setTitle("2단계: 키움증권 계좌 정보")
-        self.setSubTitle("매매에 사용할 계좌 비밀번호를 입력해주세요.")
+        self.setSubTitle("매매에 사용할 지정계좌 번호와 비밀번호를 입력해주세요.")
 
         layout = QVBoxLayout()
         layout.setSpacing(12)
 
         info = QLabel(
-            "계좌번호는 프로그램 실행 시 키움에서 자동으로 불러옵니다.\n"
-            "여기서는 비밀번호만 미리 저장해두면 됩니다."
+            "키움 로그인 후 계좌 목록이 자동으로 불러와집니다.\n"
+            "계좌가 여러 개인 경우, 아래 '지정계좌'에 프로그램 매매에 사용할 계좌번호를\n"
+            "입력해주세요. 지정계좌만 자동 매매가 허용되고 나머지는 조회 전용이 됩니다.\n"
+            "※ 지정계좌를 비워두면 계좌 목록의 첫 번째 계좌로 자동 선택됩니다."
         )
         info.setWordWrap(True)
         layout.addWidget(info)
@@ -157,36 +160,48 @@ class AccountPage(QWizardPage):
         # 모의투자
         mock_group = QGroupBox("🔵 모의투자 계좌")
         mock_layout = QGridLayout()
-        mock_layout.addWidget(QLabel("비밀번호:"), 0, 0)
+        mock_layout.addWidget(QLabel("지정계좌 번호:"), 0, 0)
+        self.mock_target = QLineEdit()
+        self.mock_target.setPlaceholderText("모의투자 계좌번호 (예: 1234567890, 선택사항)")
+        self.mock_target.setFixedWidth(280)
+        mock_layout.addWidget(self.mock_target, 0, 1)
+        mock_layout.addWidget(QLabel("비밀번호:"), 1, 0)
         self.mock_pw = QLineEdit()
         self.mock_pw.setEchoMode(QLineEdit.Password)
         self.mock_pw.setPlaceholderText("모의투자 비밀번호 (보통 0000)")
         self.mock_pw.setText("0000")
-        self.mock_pw.setFixedWidth(250)
-        mock_layout.addWidget(self.mock_pw, 0, 1)
+        self.mock_pw.setFixedWidth(280)
+        mock_layout.addWidget(self.mock_pw, 1, 1)
         mock_group.setLayout(mock_layout)
         layout.addWidget(mock_group)
 
         # 실계좌
         real_group = QGroupBox("🔴 실계좌 (선택사항)")
         real_layout = QGridLayout()
-        real_layout.addWidget(QLabel("비밀번호:"), 0, 0)
+        real_layout.addWidget(QLabel("지정계좌 번호:"), 0, 0)
+        self.real_target = QLineEdit()
+        self.real_target.setPlaceholderText("실계좌 계좌번호 (예: 1234567890, 선택사항)")
+        self.real_target.setFixedWidth(280)
+        real_layout.addWidget(self.real_target, 0, 1)
+        real_layout.addWidget(QLabel("비밀번호:"), 1, 0)
         self.real_pw = QLineEdit()
         self.real_pw.setEchoMode(QLineEdit.Password)
         self.real_pw.setPlaceholderText("실계좌 비밀번호 (4자리)")
-        self.real_pw.setFixedWidth(250)
-        real_layout.addWidget(self.real_pw, 0, 1)
+        self.real_pw.setFixedWidth(280)
+        real_layout.addWidget(self.real_pw, 1, 1)
         real_group.setLayout(real_layout)
         layout.addWidget(real_group)
 
-        warn = QLabel("※ 비밀번호는 암호화되어 로컬에만 저장됩니다. 서버로 전송되지 않습니다.")
+        warn = QLabel("※ 계좌번호와 비밀번호는 암호화되어 로컬에만 저장됩니다. 서버로 전송되지 않습니다.")
         warn.setStyleSheet("color: #888; font-size: 11px;")
         layout.addWidget(warn)
 
         layout.addStretch()
         self.setLayout(layout)
 
+        self.registerField("mock_target", self.mock_target)
         self.registerField("mock_pw", self.mock_pw)
+        self.registerField("real_target", self.real_target)
         self.registerField("real_pw", self.real_pw)
 
 
@@ -324,16 +339,28 @@ class CompletePage(QWizardPage):
         self.setLayout(layout)
 
     def initializePage(self):
+        mock_target = self.field("mock_target") or ""
         mock_pw = self.field("mock_pw") or "0000"
+        real_target = self.field("real_target") or ""
         real_pw = self.field("real_pw") or ""
         webhook = self.field("discord_webhook") or ""
         api_key = self.field("calendar_api_key") or ""
+
+        def mask_account(acc):
+            """계좌번호 마스킹 (앞 4자리 + **** + 뒤 2자리)."""
+            if not acc:
+                return "(미설정 — 첫 번째 계좌 자동 사용)"
+            if len(acc) > 6:
+                return f"{acc[:4]}****{acc[-2:]}"
+            return acc
 
         summary_lines = [
             "═══════════════════════════════════",
             "  K-Trader 설정 요약",
             "═══════════════════════════════════",
+            f"  모의투자 지정계좌: {mask_account(mock_target)}",
             f"  모의투자 비밀번호: {'●' * len(mock_pw) if mock_pw else '(미설정)'}",
+            f"  실계좌 지정계좌:   {mask_account(real_target)}",
             f"  실계좌 비밀번호:   {'●' * len(real_pw) if real_pw else '(미설정)'}",
             f"  디스코드 웹훅:     {'✅ 설정됨' if webhook else '❌ 미설정'}",
             f"  공휴일 API:        {'✅ 설정됨' if api_key else '❌ 미설정 (기본값 사용)'}",
@@ -342,11 +369,13 @@ class CompletePage(QWizardPage):
         self.summary.setText("\n".join(summary_lines))
 
         # 저장
-        self._save_secrets(mock_pw, real_pw, webhook, api_key)
+        self._save_secrets(mock_target, mock_pw, real_target, real_pw, webhook, api_key)
 
-    def _save_secrets(self, mock_pw, real_pw, webhook, api_key):
+    def _save_secrets(self, mock_target, mock_pw, real_target, real_pw, webhook, api_key):
         secrets = {
+            "mock_target_account": mock_target,
             "mock_account_password": mock_pw,
+            "real_target_account": real_target,
             "real_account_password": real_pw,
             "discord_webhook": webhook,
             "calendar_api_key": api_key,
