@@ -687,7 +687,7 @@ class TradingUI(QMainWindow):
         status_frame = QFrame()
         status_frame.setFixedHeight(48)
         status_frame.setStyleSheet(
-            f"QFrame {{ background-color: rgba(255,255,255,0.95);"
+            f"QFrame {{ background-color: {COLORS['bg_card']};"
             f" border-bottom: 1px solid {COLORS['border']}; }}"
         )
         status_bar = QHBoxLayout(status_frame)
@@ -1147,29 +1147,30 @@ class TradingUI(QMainWindow):
 
         # ── 하단 버튼바 (구분선 + 여백 포함 프레임) ──────────────────
         btn_frame = QFrame()
-        btn_frame.setFixedHeight(64)
+        btn_frame.setMinimumHeight(56)
+        btn_frame.setMaximumHeight(60)
         btn_frame.setStyleSheet(
-            f"QFrame {{ background-color: rgba(255,255,255,0.92);"
+            f"QFrame {{ background-color: {COLORS['bg_card']};"
             f" border-top: 1px solid {COLORS['border']}; }}"
         )
         btn_layout = QHBoxLayout(btn_frame)
-        btn_layout.setContentsMargins(10, 8, 10, 8)
+        btn_layout.setContentsMargins(10, 6, 10, 6)
         btn_layout.setSpacing(8)
 
         self.btn_start = QPushButton("🚀 전략 가동 시작")
         self.btn_start.setObjectName("btn_start")
-        self.btn_start.setFixedHeight(44)
+        self.btn_start.setFixedHeight(40)
         self.btn_start.clicked.connect(self._start_trading)
 
         self.btn_disconnect = QPushButton("🔌 접속 끊기")
         self.btn_disconnect.setObjectName("btn_disconnect")
-        self.btn_disconnect.setFixedHeight(44)
+        self.btn_disconnect.setFixedHeight(40)
         self.btn_disconnect.setToolTip("키움 접속만 해제합니다 (UI는 유지). 재연결 버튼으로 다시 연결할 수 있습니다.")
         self.btn_disconnect.clicked.connect(self._disconnect_engine)
 
         self.btn_exit = QPushButton("❌ 안전 종료")
         self.btn_exit.setObjectName("btn_exit")
-        self.btn_exit.setFixedHeight(44)
+        self.btn_exit.setFixedHeight(40)
         self.btn_exit.clicked.connect(self._confirm_exit)
 
         btn_layout.addWidget(self.btn_start, stretch=5)

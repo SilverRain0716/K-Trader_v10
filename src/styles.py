@@ -1,44 +1,44 @@
 """
 K-Trader Master v7.6 - UI 스타일시트
-[개선] 라이트 모드 테마 — 밝고 선명한 전문가용 트레이딩 UI
-      Bento Grid 카드 구조 + 그림자 깊이감 + 가독성 최우선
+[개선] 미드톤 Navy Twilight 테마 — 어둡지 않고 너무 밝지 않은 중간 톤
+      Bento Grid 카드 구조 + 눈에 편안한 다크-네이비 팔레트
 """
 
-# ── 컬러 팔레트 (Light Professional Theme) ─────────────────────────
+# ── 컬러 팔레트 (Mid-Tone Navy Twilight Theme) ──────────────────────
 COLORS = {
-    # 배경
-    "bg_primary":     "#EFF3F8",   # 메인 배경 (연한 블루-그레이)
-    "bg_secondary":   "#FFFFFF",   # 카드/패널 배경 (흰색)
-    "bg_card":        "#F1F5F9",   # 테이블 헤더, 구분 영역 (Slate 100)
-    "bg_input":       "#F8FAFC",   # 입력창 배경 (Slate 50)
-    "bg_table":       "#FFFFFF",   # 테이블 기본 배경
-    "bg_table_alt":   "#F8FAFC",   # 테이블 줄무늬
+    # 배경 (중간 밝기 다크 네이비)
+    "bg_primary":     "#1E2D40",   # 메인 배경 (중간 다크 네이비)
+    "bg_secondary":   "#243347",   # 카드/패널 배경 (살짝 밝은 네이비)
+    "bg_card":        "#1A2535",   # 테이블 헤더, 구분 영역 (살짝 어두운 네이비)
+    "bg_input":       "#2C3E54",   # 입력창 배경 (블루-슬레이트)
+    "bg_table":       "#243347",   # 테이블 기본 배경
+    "bg_table_alt":   "#1E2D40",   # 테이블 줄무늬
 
-    # 텍스트
-    "text_primary":   "#1E293B",   # 기본 텍스트 (Slate 800 — 눈에 편안한 진한색)
-    "text_secondary": "#475569",   # 보조 텍스트 (Slate 600)
-    "text_bright":    "#0F172A",   # 강조 텍스트 (Slate 950)
+    # 텍스트 (밝은 색 — 다크 배경에 가독성)
+    "text_primary":   "#E2E8F0",   # 기본 텍스트 (Slate 200)
+    "text_secondary": "#94A3B8",   # 보조 텍스트 (Slate 400)
+    "text_bright":    "#F8FAFC",   # 강조 텍스트 (near white)
 
-    # 포인트 컬러
-    "accent_blue":    "#2563EB",   # 메인 블루 (Blue 600)
-    "accent_green":   "#059669",   # 에메랄드 그린 (Emerald 600)
+    # 포인트 컬러 (다크 배경에 밝게)
+    "accent_blue":    "#60A5FA",   # 메인 블루 (Blue 400 — 다크bg용)
+    "accent_green":   "#34D399",   # 에메랄드 그린 (Emerald 400)
 
     # 트레이딩 색상 (한국식: 수익=빨강, 손실=파랑)
-    "profit_red":     "#DC2626",   # 수익/상승 빨강 (Red 600)
-    "loss_blue":      "#2563EB",   # 손실/하락 파랑 (Blue 600)
-    "profit_green":   "#059669",   # 매수 성공 (Emerald 600)
-    "loss_red":       "#DC2626",   # 매도/손절
+    "profit_red":     "#F87171",   # 수익/상승 빨강 (Red 400 — 다크bg용)
+    "loss_blue":      "#60A5FA",   # 손실/하락 파랑 (Blue 400)
+    "profit_green":   "#34D399",   # 매수 성공 (Emerald 400)
+    "loss_red":       "#F87171",   # 매도/손절
 
     # 경고/위험
-    "warning_orange": "#D97706",   # 경고 주황 (Amber 600)
-    "danger_red":     "#DC2626",   # 에러/위험
+    "warning_orange": "#FBBF24",   # 경고 주황 (Amber 400)
+    "danger_red":     "#F87171",   # 에러/위험
 
     # 테두리 & 상태
-    "border":         "#CBD5E1",   # 기본 경계선 (Slate 300)
-    "hover":          "#EFF6FF",   # 마우스 오버 (Blue 50)
-    "pressed":        "#DBEAFE",   # 클릭 (Blue 100)
-    "disabled":       "#CBD5E1",   # 비활성 테두리
-    "disabled_bg":    "#F1F5F9",   # 비활성 배경
+    "border":         "#334155",   # 기본 경계선 (Slate 700)
+    "hover":          "#2D4060",   # 마우스 오버 (네이비 밝게)
+    "pressed":        "#3B526B",   # 클릭
+    "disabled":       "#334155",   # 비활성 테두리
+    "disabled_bg":    "#1A2535",   # 비활성 배경
 }
 
 
@@ -96,7 +96,7 @@ QLineEdit, QSpinBox, QDoubleSpinBox {{
 }}
 QLineEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus {{
     border: 2px solid {COLORS['accent_blue']};
-    background-color: #FFFFFF;
+    background-color: {COLORS['bg_input']};
 }}
 QLineEdit:hover, QSpinBox:hover, QDoubleSpinBox:hover {{
     border: 1px solid {COLORS['accent_blue']};
@@ -120,7 +120,7 @@ QComboBox::drop-down {{
     width: 24px;
 }}
 QComboBox QAbstractItemView {{
-    background-color: #FFFFFF;
+    background-color: {COLORS['bg_secondary']};
     color: {COLORS['text_primary']};
     selection-background-color: {COLORS['hover']};
     selection-color: {COLORS['accent_blue']};
@@ -171,7 +171,7 @@ QCheckBox::indicator {{
     width: 18px; height: 18px;
     border: 1.5px solid {COLORS['border']};
     border-radius: 5px;
-    background-color: #FFFFFF;
+    background-color: {COLORS['bg_input']};
 }}
 QCheckBox::indicator:hover {{
     border-color: {COLORS['accent_blue']};
@@ -190,7 +190,7 @@ QCheckBox::indicator:disabled {{
 
 /* ════════════════ 버튼 (기본) ════════════════ */
 QPushButton {{
-    background-color: #FFFFFF;
+    background-color: {COLORS['bg_card']};
     color: {COLORS['text_primary']};
     border: 1px solid {COLORS['border']};
     border-radius: 8px;
@@ -219,60 +219,60 @@ QPushButton#btn_start {{
     color: white;
     border: none;
     font-size: 15px;
-    min-height: 48px;
+    min-height: 44px;
     border-radius: 10px;
 }}
 QPushButton#btn_start:hover {{
-    background-color: #1D4ED8;
+    background-color: #3B82F6;
 }}
 QPushButton#btn_start[trading="true"] {{
     background-color: #059669;
 }}
 QPushButton#btn_start[trading="true"]:hover {{
-    background-color: #047857;
+    background-color: #10B981;
 }}
 
 /* 종료 버튼 */
 QPushButton#btn_exit {{
-    background-color: #F1F5F9;
+    background-color: {COLORS['bg_card']};
     color: {COLORS['text_secondary']};
     border: 1px solid {COLORS['border']};
     font-size: 15px;
-    min-height: 48px;
+    min-height: 44px;
     border-radius: 10px;
 }}
 QPushButton#btn_exit:hover {{
-    background-color: #FEE2E2;
-    border-color: #DC2626;
-    color: #DC2626;
+    background-color: rgba(248, 113, 113, 0.15);
+    border-color: {COLORS['danger_red']};
+    color: {COLORS['danger_red']};
 }}
 
 /* 접속 끊기 / 재연결 버튼 */
 QPushButton#btn_disconnect {{
-    background-color: #EFF6FF;
+    background-color: rgba(96, 165, 250, 0.12);
     color: {COLORS['accent_blue']};
-    border: 1.5px solid #BFDBFE;
+    border: 1.5px solid rgba(96, 165, 250, 0.35);
     font-size: 15px;
-    min-height: 48px;
+    min-height: 44px;
     border-radius: 10px;
 }}
 QPushButton#btn_disconnect:hover {{
-    background-color: #DBEAFE;
+    background-color: rgba(96, 165, 250, 0.22);
     border-color: {COLORS['accent_blue']};
 }}
 
 /* 수동매도 버튼 */
 QPushButton#btn_manual_sell {{
-    background-color: #FEF2F2;
-    color: #DC2626;
-    border: 1px solid #FECACA;
+    background-color: rgba(248, 113, 113, 0.12);
+    color: {COLORS['danger_red']};
+    border: 1px solid rgba(248, 113, 113, 0.35);
     border-radius: 6px;
     padding: 4px 10px;
     font-size: 12px;
 }}
 QPushButton#btn_manual_sell:hover {{
-    background-color: #FEE2E2;
-    border-color: #DC2626;
+    background-color: rgba(248, 113, 113, 0.22);
+    border-color: {COLORS['danger_red']};
 }}
 
 /* ════════════════ 테이블 ════════════════ */
@@ -362,7 +362,7 @@ QScrollBar::handle:vertical {{
     min-height: 24px;
 }}
 QScrollBar::handle:vertical:hover {{
-    background-color: #94A3B8;
+    background-color: #64748B;
 }}
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0px; }}
 
@@ -378,13 +378,13 @@ QScrollBar::handle:horizontal {{
     min-width: 24px;
 }}
 QScrollBar::handle:horizontal:hover {{
-    background-color: #94A3B8;
+    background-color: #64748B;
 }}
 QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{ width: 0px; }}
 
 /* ════════════════ 트레이 메뉴 ════════════════ */
 QMenu {{
-    background-color: #FFFFFF;
+    background-color: {COLORS['bg_secondary']};
     color: {COLORS['text_primary']};
     border: 1px solid {COLORS['border']};
     border-radius: 8px;
