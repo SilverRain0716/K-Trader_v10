@@ -455,8 +455,12 @@ class TradingUI(QMainWindow):
             self._available_accounts = accounts  # 계좌변경 다이얼로그용 전체 목록 저장
             self.btn_change_account.setEnabled(not self.is_trading_started)
 
-            # 최초 1회만 자동 계좌 설정 (레이블이 아직 기본 문구인 경우)
-            if "연결 대기" in self.account_label.text():
+            # [Fix] 계좌 자동 설정:
+            # "연결 대기" 조건으로만 판단하면 재연결 후 account_label이 이전 계좌번호로
+            # 남아 있어 REQ_DEPOSIT이 전달되지 않아 예수금 0 / 엉뚱한 계좌 조회 버그 발생.
+            # _reconnect_engine()에서 account_label을 "계좌 연결 대기 중..."으로 리셋하므로
+            # 재연결 시에도 이 블록이 올바르게 실행됩니다.
+            if "연결 대기" in self.account_label.text() or "조회 중" in self.account_label.text():
                 target = self._get_target_account()
                 if target and target in accounts:
                     # secrets.json에 설정된 계좌가 유효하면 그대로 사용
@@ -1541,6 +1545,18 @@ class TradingUI(QMainWindow):
         self._engine_crash_count = 0
         self.engine_status = "OFFLINE"
         self.auto_start_countdown = 30
+
+        # [Fix] 재연결 시 계좌/예수금 레이블 초기화
+        # → _handle_state에서 "연결 대기" 조건이 True가 되어
+        #   secrets.json의 올바른 계좌로 _apply_account() → REQ_DEPOSIT이 재전송됨
+        # → 미리셋 시: 엔진 self.account="" 유지 → Kiwoom 기본계좌(첫번째)로 조회되거나 예수금 0
+        self.account_label.setText("계좌 연결 대기 중...")
+        self.account_label.setStyleSheet(
+            "color: #aaaaaa; font-size: 13px; padding: 4px 8px;"
+        )
+        self.deposit_label.setText("💰 예수금(D+2): 조회 중...")
+        self._last_loaded_conditions = None  # 조건식 목록도 재로딩 허용
+
         self._spawn_engine()
         # 버튼 원복
         self.btn_disconnect.setText("🔌 접속 끊기")
