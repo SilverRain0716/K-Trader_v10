@@ -91,13 +91,7 @@ class TradingUI(QMainWindow):
         self._available_accounts = []  # 엔진에서 받은 전체 계좌 목록 (계좌변경 다이얼로그용)
 
         self.setWindowTitle(f"K-Trader v{__version__}")
-        # 작업표시줄 제외 가용 영역에 딱 맞게 배치 (항상 화면 안에 들어오도록)
-        _screen = QApplication.primaryScreen().availableGeometry()
-        _win_w = min(1150, _screen.width() - 40)
-        _win_h = _screen.height() - 40          # 가용 높이 전체 - 여유 40px
-        _win_x = _screen.x() + (_screen.width()  - _win_w) // 2
-        _win_y = _screen.y() + 20               # 상단 기준으로 20px 여유
-        self.setGeometry(_win_x, _win_y, _win_w, _win_h)
+        self.setGeometry(150, 100, 1150, 950)
         self.setStyleSheet(DARK_THEME_QSS)
 
         self._setup_ui()
@@ -686,19 +680,9 @@ class TradingUI(QMainWindow):
     def _setup_ui(self):
         main_widget = QWidget()
         main_layout = QVBoxLayout()
-        main_layout.setSpacing(0)
-        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(8)
 
-        # ── 상태바 (고정 높이 카드형 프레임) ──────────────────────────
-        status_frame = QFrame()
-        status_frame.setFixedHeight(48)
-        status_frame.setStyleSheet(
-            f"QFrame {{ background-color: {COLORS['bg_card']};"
-            f" border-bottom: 1px solid {COLORS['border']}; }}"
-        )
-        status_bar = QHBoxLayout(status_frame)
-        status_bar.setContentsMargins(12, 0, 12, 0)
-        status_bar.setSpacing(8)
+        status_bar = QHBoxLayout()
 
         # [개선] 단일 계좌 표시 — 콤보박스 제거, Label + 변경 버튼으로 교체
         self.account_label = QLabel("계좌 연결 대기 중...")
@@ -708,7 +692,6 @@ class TradingUI(QMainWindow):
         )
         self.btn_change_account = QPushButton("🔄 계좌변경")
         self.btn_change_account.setFixedWidth(90)
-        self.btn_change_account.setFixedHeight(30)
         self.btn_change_account.setEnabled(False)  # 엔진 연결 전까지 비활성
         self.btn_change_account.clicked.connect(self._change_account)
 
@@ -716,37 +699,15 @@ class TradingUI(QMainWindow):
         self.pw_input.setEchoMode(QLineEdit.Password)
         self.pw_input.setPlaceholderText("PW")
         self.pw_input.setFixedWidth(70)
-        self.pw_input.setFixedHeight(30)
         self.pw_input.setText(self._get_account_password())
 
         self.status_label = QLabel("엔진 준비 중...")
-        self.status_label.setStyleSheet("font-weight: bold; font-size: 13px;")
-
-        # 예수금/주문가능/손익 — 칩(pill) 스타일
-        _chip_base = (
-            f"background-color: {COLORS['bg_card']};"
-            f" border: 1px solid {COLORS['border']};"
-            " border-radius: 14px;"
-            " padding: 3px 12px;"
-            f" color: {COLORS['text_secondary']};"
-            " font-size: 12px;"
-        )
         self.deposit_label = QLabel("💰 예수금(D+2): 0원")
-        self.deposit_label.setStyleSheet(_chip_base)
+        self.deposit_label.setStyleSheet(f"color: {COLORS['text_secondary']}; padding: 4px 8px;")
         self.orderable_label = QLabel("💳 주문가능: 0원")
-        self.orderable_label.setStyleSheet(_chip_base)
+        self.orderable_label.setStyleSheet(f"color: {COLORS['text_secondary']}; padding: 4px 8px;")
         self.pnl_label = QLabel("📊 실현손익: 0원")
-        self.pnl_label.setStyleSheet(
-            _chip_base + " font-weight: bold; font-size: 13px;"
-        )
-
-        # 세로 구분선 헬퍼
-        def _vsep():
-            s = QFrame()
-            s.setFrameShape(QFrame.VLine)
-            s.setFixedHeight(22)
-            s.setStyleSheet(f"color: {COLORS['border']};")
-            return s
+        self.pnl_label.setStyleSheet(f"padding: 4px 8px; font-weight: bold; font-size: 15px;")
 
         status_bar.addWidget(QLabel("💳"))
         status_bar.addWidget(self.account_label)
@@ -755,25 +716,18 @@ class TradingUI(QMainWindow):
 
         self.btn_discord_diag = QPushButton("🔔 알림 점검")
         self.btn_discord_diag.setFixedWidth(110)
-        self.btn_discord_diag.setFixedHeight(30)
         self.btn_discord_diag.clicked.connect(self._diagnose_discord)
         status_bar.addWidget(self.btn_discord_diag)
 
         status_bar.addWidget(self.status_label, stretch=1)
-        status_bar.addWidget(_vsep())
+        sep1 = QLabel("|"); sep1.setStyleSheet(f"color: {COLORS['border']};")
+        sep2 = QLabel("|"); sep2.setStyleSheet(f"color: {COLORS['border']};")
         status_bar.addWidget(self.deposit_label)
-        status_bar.addWidget(_vsep())
+        status_bar.addWidget(sep1)
         status_bar.addWidget(self.orderable_label)
-        status_bar.addWidget(_vsep())
+        status_bar.addWidget(sep2)
         status_bar.addWidget(self.pnl_label)
-
-        main_layout.addWidget(status_frame)
-
-        # 탭 영역 래퍼 (8px 패딩)
-        tab_wrapper = QWidget()
-        tab_wrapper_layout = QVBoxLayout(tab_wrapper)
-        tab_wrapper_layout.setContentsMargins(8, 8, 8, 0)
-        tab_wrapper_layout.setSpacing(0)
+        main_layout.addLayout(status_bar)
 
         self.tabs = QTabWidget()
 
@@ -1148,41 +1102,26 @@ class TradingUI(QMainWindow):
         log_tab.setLayout(log_layout)
         self.tabs.addTab(log_tab, "📝 로그")
 
-        tab_wrapper_layout.addWidget(self.tabs)
-        main_layout.addWidget(tab_wrapper, stretch=1)
+        main_layout.addWidget(self.tabs, stretch=1)
 
-        # ── 하단 버튼바 (구분선 + 여백 포함 프레임) ──────────────────
-        btn_frame = QFrame()
-        btn_frame.setFixedHeight(54)
-        btn_frame.setStyleSheet(
-            f"QFrame {{ background-color: {COLORS['bg_card']};"
-            f" border-top: 1px solid {COLORS['border']}; }}"
-        )
-        btn_layout = QHBoxLayout(btn_frame)
-        btn_layout.setContentsMargins(10, 5, 10, 5)
-        btn_layout.setSpacing(8)
-
+        btn_layout = QHBoxLayout()
         self.btn_start = QPushButton("🚀 전략 가동 시작")
         self.btn_start.setObjectName("btn_start")
-        self.btn_start.setFixedHeight(38)
         self.btn_start.clicked.connect(self._start_trading)
 
         self.btn_disconnect = QPushButton("🔌 접속 끊기")
         self.btn_disconnect.setObjectName("btn_disconnect")
-        self.btn_disconnect.setFixedHeight(38)
         self.btn_disconnect.setToolTip("키움 접속만 해제합니다 (UI는 유지). 재연결 버튼으로 다시 연결할 수 있습니다.")
         self.btn_disconnect.clicked.connect(self._disconnect_engine)
 
         self.btn_exit = QPushButton("❌ 안전 종료")
         self.btn_exit.setObjectName("btn_exit")
-        self.btn_exit.setFixedHeight(38)
         self.btn_exit.clicked.connect(self._confirm_exit)
 
         btn_layout.addWidget(self.btn_start, stretch=5)
         btn_layout.addWidget(self.btn_disconnect, stretch=3)
         btn_layout.addWidget(self.btn_exit, stretch=2)
-
-        main_layout.addWidget(btn_frame)
+        main_layout.addLayout(btn_layout)
 
         main_widget.setLayout(main_layout)
         self.setCentralWidget(main_widget)
