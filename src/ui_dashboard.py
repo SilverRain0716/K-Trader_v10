@@ -631,11 +631,14 @@ class TradingUI(QMainWindow):
                 if done < total:
                     status = f"📦 분할매수 {done}/{total}"
             ss = data.get('split_sell')
-            if ss and ss.get('targets'):
-                done = sum(1 for t in ss['targets'] if t.get('done'))
-                total = len(ss['targets'])
-                if 0 < done < total:
-                    status = f"📤 분할매도 {done}/{total}"
+            if ss:
+                t1 = ss.get('t1_done', False)
+                t2 = ss.get('t2_done', False)
+                done = int(t1) + int(t2)
+                if done == 1:
+                    status = "📤 분할매도 1/2"
+                elif done == 2:
+                    status = "📤 분할매도 2/2"
 
             items = [
                 code,
@@ -922,23 +925,37 @@ class TradingUI(QMainWindow):
         self.split_buy_confirm.valueChanged.connect(self._mark_config_dirty)
         s3.addWidget(self.split_buy_confirm, 0, 5)
 
-        # Row 1: 분할매도 — TS와 함께 사용 (익절%에서 1차 비중 매도 → TS가 나머지 처리)
+        # Row 1: 분할매도 — TS 독립형 (Option C)
+        # 1차: 익절% 도달 → ratio1% 매도 / 2차: 익절%+offset% 도달 → 잔여 전량 (TS 없어도 작동)
         self.split_sell_cb = QCheckBox("분할매도")
-        self.split_sell_cb.setToolTip("T.S 활성 시에만 동작합니다.\n익절% 도달 → 1차 비중 매도 → 나머지는 T.S가 처리합니다.")
+        self.split_sell_cb.setToolTip(
+            "TS 독립형 분할매도 (Option C)\n"
+            "① 익절% 도달 → 1차 비중(ratio1%) 매도\n"
+            "② 익절%+offset% 도달 → 잔여 전량 매도\n"
+            "③ TS 발동 시 잔여 전량 우선 처리 (TS 설정 시)"
+        )
         self.split_sell_cb.stateChanged.connect(self._mark_config_dirty)
         s3.addWidget(self.split_sell_cb, 1, 0)
-        lbl = QLabel("1차매도:"); lbl.setObjectName("setting_label")
+        lbl = QLabel("1차비중:"); lbl.setObjectName("setting_label")
         s3.addWidget(lbl, 1, 1)
         self.split_sell_t1_ratio = QSpinBox()
         self.split_sell_t1_ratio.setRange(10, 90)
         self.split_sell_t1_ratio.setValue(50)
         self.split_sell_t1_ratio.setSuffix("%")
-        self.split_sell_t1_ratio.setToolTip("익절% 도달 시 매도할 비중 (나머지는 T.S가 처리)")
+        self.split_sell_t1_ratio.setToolTip("익절% 도달 시 1차 매도 비중 (%)")
         self.split_sell_t1_ratio.valueChanged.connect(self._mark_config_dirty)
         s3.addWidget(self.split_sell_t1_ratio, 1, 2)
-        lbl2 = QLabel("→ 나머지는 T.S 전량"); lbl2.setObjectName("setting_label")
-        lbl2.setStyleSheet(f"color: {COLORS.get('text_secondary', '#888')}; font-size: 11px;")
-        s3.addWidget(lbl2, 1, 3, 1, 3)  # colspan 3
+        lbl_off = QLabel("2차+"); lbl_off.setObjectName("setting_label")
+        s3.addWidget(lbl_off, 1, 3)
+        self.split_sell_offset = QDoubleSpinBox()
+        self.split_sell_offset.setRange(0.1, 10.0)
+        self.split_sell_offset.setSingleStep(0.5)
+        self.split_sell_offset.setValue(1.5)
+        self.split_sell_offset.setSuffix("%")
+        self.split_sell_offset.setDecimals(1)
+        self.split_sell_offset.setToolTip("2차 트리거 = 익절% + offset%\n잔여 전량 매도 (TS 없어도 작동)")
+        self.split_sell_offset.valueChanged.connect(self._mark_config_dirty)
+        s3.addWidget(self.split_sell_offset, 1, 4)
 
         settings_vbox.addLayout(s3)
 
@@ -1132,7 +1149,8 @@ class TradingUI(QMainWindow):
             "split_buy_ratios": [self.split_buy_ratio1.value(), 100 - self.split_buy_ratio1.value()] if self.split_buy_rounds_spin.value() == 2 else [self.split_buy_ratio1.value(), self.split_buy_ratio2.value(), max(0, 100 - self.split_buy_ratio1.value() - self.split_buy_ratio2.value())],
             "split_buy_confirm_pct": round(self.split_buy_confirm.value(), 2),
             "split_sell_enabled": self.split_sell_cb.isChecked(),
-            "split_sell_ratio": self.split_sell_t1_ratio.value(),  # 1차 매도 비중(%), 나머지는 TS/익절+2% 전량
+            "split_sell_ratio1": self.split_sell_t1_ratio.value(),   # 1차 매도 비중(%)
+            "split_sell_offset": round(self.split_sell_offset.value(), 1),  # 2차 트리거 = 익절%+offset%
             # 계좌는 secrets.json의 target_account를 단일 진실의 원천으로 사용 (config 저장 불필요)
         }
         self.config_mgr.save(config)
@@ -1234,11 +1252,14 @@ class TradingUI(QMainWindow):
         self.split_buy_ratio2.setValue(ratios[1] if len(ratios) > 1 else 70)
         self.split_buy_confirm.setValue(c.get("split_buy_confirm_pct", 1.0))
         self.split_sell_cb.setChecked(c.get("split_sell_enabled", False))
-        # 구버전 split_sell_targets 호환: 첫 번째 ratio 값을 가져옴
+        # 구버전 호환: split_sell_targets / split_sell_ratio → split_sell_ratio1 으로 마이그레이션
         legacy_ratio = 50
         if "split_sell_targets" in c and c["split_sell_targets"]:
             legacy_ratio = c["split_sell_targets"][0].get("ratio", 50)
-        self.split_sell_t1_ratio.setValue(c.get("split_sell_ratio", legacy_ratio))
+        self.split_sell_t1_ratio.setValue(
+            c.get("split_sell_ratio1", c.get("split_sell_ratio", legacy_ratio))
+        )
+        self.split_sell_offset.setValue(c.get("split_sell_offset", 1.5))
         self._block_signals(False)
 
     def _block_signals(self, block: bool):
@@ -1248,7 +1269,7 @@ class TradingUI(QMainWindow):
                   self.timecut_cb, self.shutdown_cb, self.order_type_cb, self.minimize_to_tray_cb,
                   self.split_buy_cb, self.split_buy_rounds_spin, self.split_buy_ratio1,
                   self.split_buy_ratio2, self.split_buy_confirm,
-                  self.split_sell_cb, self.split_sell_t1_ratio]:
+                  self.split_sell_cb, self.split_sell_t1_ratio, self.split_sell_offset]:
             w.blockSignals(block)
 
     def _on_invest_type_changed(self):

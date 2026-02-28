@@ -218,12 +218,13 @@ DEFAULT_CONFIG = {
     "split_buy_ratios": [30, 70],
     "split_buy_confirm_pct": 1.0,
     "split_buy_confirm_pct_3rd": 2.0,
-    # [v7.5] 분할 매도 (구간별 고정 익절)
+    # [v7.6] 분할 매도 — TS 독립형 (Option C)
+    # 1차: 익절% 도달 → ratio1% 매도
+    # 2차: 익절% + offset% 도달 → 잔여 전량 (TS 없어도 작동)
+    # TS 발동 시: 잔여 전량 우선 처리
     "split_sell_enabled": False,
-    "split_sell_targets": [
-        {"pct": 2.0, "ratio": 50},
-        {"pct": 4.0, "ratio": 50},
-    ],
+    "split_sell_ratio1": 50,    # 1차 매도 비중 (%)
+    "split_sell_offset": 1.5,   # 2차 트리거 = 익절% + offset%
 }
 
 
