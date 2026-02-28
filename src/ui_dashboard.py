@@ -18,7 +18,8 @@ from PyQt5.QtWidgets import (
     QGridLayout, QGroupBox, QTabWidget, QPushButton, QLabel, QFrame,
     QSpinBox, QDoubleSpinBox, QComboBox, QCheckBox, QLineEdit,
     QTextEdit, QTableWidget, QTableWidgetItem, QHeaderView,
-    QListWidget, QListWidgetItem, QMessageBox, QSystemTrayIcon, QMenu, QAction
+    QListWidget, QListWidgetItem, QMessageBox, QSystemTrayIcon, QMenu, QAction,
+    QDialog
 )
 from PyQt5.QtCore import QTimer, Qt
 from PyQt5.QtGui import QIcon, QColor, QFont, QBrush
@@ -78,6 +79,7 @@ class TradingUI(QMainWindow):
         self._max_engine_restarts = 5
         self._last_loaded_conditions = None
         self._ui_pre_market_restart_date = None  # 8:50 UI측 강제 재시작 하루 1회 플래그
+        self._available_accounts = []  # 엔진에서 받은 전체 계좌 목록 (계좌변경 다이얼로그용)
 
         self.setWindowTitle(f"K-Trader v{__version__}")
         self.setGeometry(150, 100, 1150, 950)
@@ -204,7 +206,7 @@ class TradingUI(QMainWindow):
             if self.is_trading_started:
                 self.is_trading_started = False
                 self.auto_start_countdown = 30
-                self.account_cb.setEnabled(True)
+                self.btn_change_account.setEnabled(bool(self._available_accounts))
                 self.condition_list.setEnabled(True)
                 self.btn_start.setText("🚀 전략 가동 시작")
                 self.btn_start.setProperty("trading", "false")
@@ -290,20 +292,64 @@ class TradingUI(QMainWindow):
             return self.secrets.get('mock_target_account', '')
         return self.secrets.get('real_target_account', '')
 
-    def _get_saved_account(self) -> str:
-        """마지막으로 사용한 계좌(모의/실)를 config에 저장해두었다가 복원합니다."""
-        key = 'last_account_mock' if self.is_mock else 'last_account_real'
-        return self.config_mgr.get(key, '') or ''
-
-    def _save_last_account(self, acc: str):
-        """현재 선택한 계좌를 모의/실 모드별로 저장합니다."""
+    def _apply_account(self, acc: str):
+        """계좌를 선택/변경한다. secrets.json 갱신 + UI 표시 + 엔진에 예수금 요청."""
         if not acc:
             return
-        key = 'last_account_mock' if self.is_mock else 'last_account_real'
-        cfg = self.config_mgr.config
-        if cfg.get(key) != acc:
-            cfg[key] = acc
-            self.config_mgr.save(cfg)
+        # secrets.json의 target_account를 단일 진실의 원천으로 갱신
+        key = 'mock_target_account' if self.is_mock else 'real_target_account'
+        if self.secrets.get(key) != acc:
+            self.secrets[key] = acc
+            SecretManager(CONFIG_DIR).save(self.secrets)
+            logger.info(f"[UI] target_account 갱신: {acc[:4]}****{acc[-2:]} (key={key})")
+
+        # UI 레이블 갱신
+        self.account_label.setText(f"{acc[:4]}****{acc[-2:]}")
+        self._send_log(f"💳 계좌 설정: {acc[:4]}****{acc[-2:]}")
+
+        # 엔진에 예수금 조회 요청
+        self.ipc_server.send_command("REQ_DEPOSIT", f"{acc}^{self.pw_input.text()}")
+
+    def _change_account(self):
+        """실행 중 계좌 변경 다이얼로그. 엔진에서 받은 전체 계좌 목록을 보여주고 선택하게 함."""
+        if not self._available_accounts:
+            QMessageBox.warning(self, "계좌 정보 없음", "엔진에서 아직 계좌 정보를 받지 못했습니다.\n잠시 후 다시 시도해주세요.")
+            return
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("계좌 변경")
+        dialog.setMinimumWidth(280)
+        layout = QVBoxLayout()
+
+        mode_text = "모의투자" if self.is_mock else "실계좌"
+        layout.addWidget(QLabel(f"[{mode_text}] 사용할 계좌를 선택하세요:"))
+
+        list_widget = QListWidget()
+        current_target = self._get_target_account()
+        for acc in self._available_accounts:
+            masked = f"{acc[:4]}****{acc[-2:]}"
+            item = QListWidgetItem(masked)
+            item.setData(Qt.UserRole, acc)
+            list_widget.addItem(item)
+            if acc == current_target:
+                list_widget.setCurrentItem(item)
+
+        layout.addWidget(list_widget)
+
+        btn_box = QHBoxLayout()
+        btn_ok = QPushButton("✅ 선택")
+        btn_cancel = QPushButton("취소")
+        btn_ok.clicked.connect(dialog.accept)
+        btn_cancel.clicked.connect(dialog.reject)
+        btn_box.addWidget(btn_ok)
+        btn_box.addWidget(btn_cancel)
+        layout.addLayout(btn_box)
+        dialog.setLayout(layout)
+
+        if dialog.exec_() == QDialog.Accepted:
+            selected = list_widget.currentItem()
+            if selected:
+                self._apply_account(selected.data(Qt.UserRole))
 
     def _diagnose_discord(self):
         """디스코드 웹훅 연결 상태를 즉시 점검(동기)하고, 가능하면 테스트 메시지도 전송합니다."""
@@ -390,28 +436,21 @@ class TradingUI(QMainWindow):
         self.pnl_label.setStyleSheet(f"color: {profit_color(prof)}; font-weight: bold; font-size: 15px;")
 
         accounts = state.get("accounts", [])
-        if accounts and self.account_cb.count() == 0:
-            # 계좌 목록 채우기
-            for a in accounts:
-                self.account_cb.addItem(f"{a[:4]}****{a[-2:]}", userData=a)
+        if accounts:
+            self._available_accounts = accounts  # 계좌변경 다이얼로그용 전체 목록 저장
+            self.btn_change_account.setEnabled(not self.is_trading_started)
 
-            # ✅ 개선: 실계좌/모의 각각
-            # 1) secrets.json의 target_account가 있으면 그 계좌로 자동 선택
-            # 2) 없으면 마지막으로 선택했던 계좌(last_account_*)로 자동 복원
-            desired = self._get_target_account() or self._get_saved_account()
-            idx = self.account_cb.findData(desired) if desired else -1
-            self.account_cb.blockSignals(True)
-            if idx >= 0:
-                self.account_cb.setCurrentIndex(idx)
-                self._send_log(f"💳 자동 계좌 선택: {desired[:4]}****{desired[-2:]}")
-            else:
-                self.account_cb.setCurrentIndex(0)
-                if desired:
-                    self._send_log("⚠️ 저장/타겟 계좌가 로그인 계좌 목록에 없습니다. 첫 번째 계좌로 선택합니다.")
-            self.account_cb.blockSignals(False)
-
-            if self.account_cb.count() > 0:
-                self._on_account_changed()
+            # 최초 1회만 자동 계좌 설정 (레이블이 아직 기본 문구인 경우)
+            if "연결 대기" in self.account_label.text():
+                target = self._get_target_account()
+                if target and target in accounts:
+                    # secrets.json에 설정된 계좌가 유효하면 그대로 사용
+                    self._apply_account(target)
+                else:
+                    # 미설정이거나 목록에 없으면 첫 번째 계좌 자동 선택
+                    if target and target not in accounts:
+                        self._send_log("⚠️ secrets.json의 target_account가 로그인 계좌 목록에 없습니다. 첫 번째 계좌로 자동 설정합니다.")
+                    self._apply_account(accounts[0])
 
 
         conditions = state.get("conditions", [])
@@ -622,9 +661,17 @@ class TradingUI(QMainWindow):
         main_layout.setSpacing(8)
 
         status_bar = QHBoxLayout()
-        self.account_cb = QComboBox()
-        self.account_cb.setFixedWidth(140)
-        self.account_cb.currentIndexChanged.connect(self._on_account_changed)
+
+        # [개선] 단일 계좌 표시 — 콤보박스 제거, Label + 변경 버튼으로 교체
+        self.account_label = QLabel("계좌 연결 대기 중...")
+        self.account_label.setStyleSheet(
+            f"font-weight: bold; color: {COLORS['text_primary']}; "
+            "padding: 2px 8px; min-width: 130px;"
+        )
+        self.btn_change_account = QPushButton("🔄 계좌변경")
+        self.btn_change_account.setFixedWidth(90)
+        self.btn_change_account.setEnabled(False)  # 엔진 연결 전까지 비활성
+        self.btn_change_account.clicked.connect(self._change_account)
 
         self.pw_input = QLineEdit()
         self.pw_input.setEchoMode(QLineEdit.Password)
@@ -641,7 +688,8 @@ class TradingUI(QMainWindow):
         self.pnl_label.setStyleSheet(f"padding: 4px 8px; font-weight: bold; font-size: 15px;")
 
         status_bar.addWidget(QLabel("💳"))
-        status_bar.addWidget(self.account_cb)
+        status_bar.addWidget(self.account_label)
+        status_bar.addWidget(self.btn_change_account)
         status_bar.addWidget(self.pw_input)
 
         self.btn_discord_diag = QPushButton("🔔 알림 점검")
@@ -1080,10 +1128,7 @@ class TradingUI(QMainWindow):
                 {"pct": round(self.split_sell_t1_pct.value(), 2), "ratio": self.split_sell_t1_ratio.value()},
                 {"pct": round(self.split_sell_t2_pct.value(), 2), "ratio": self.split_sell_t2_ratio.value()},
             ],
-            # 마지막 선택 계좌(모의/실) — 자동 복원을 위해 유지
-            "last_account_mock": self.config_mgr.get("last_account_mock", ""),
-            "last_account_real": self.config_mgr.get("last_account_real", ""),
-
+            # 계좌는 secrets.json의 target_account를 단일 진실의 원천으로 사용 (config 저장 불필요)
         }
         self.config_mgr.save(config)
 
@@ -1264,12 +1309,6 @@ class TradingUI(QMainWindow):
         current = self.stats_text.toPlainText()
         self.stats_text.setPlainText(current + text)
 
-    def _on_account_changed(self):
-        if self.account_cb.currentIndex() < 0:
-            return
-        acc = self.account_cb.currentData()
-        self._save_last_account(acc)
-        self.ipc_server.send_command("REQ_DEPOSIT", f"{acc}^{self.pw_input.text()}")
 
     def _auto_start_tick(self):
         if self.auto_start_countdown > 0:
@@ -1285,19 +1324,11 @@ class TradingUI(QMainWindow):
         if self.is_trading_started:
             return
 
-        # [Fix #10] target_account 보호 검증 — 지정된 계좌만 허용
+        # 계좌 확인 — target_account가 단일 진실의 원천
         target_acc = self._get_target_account()
-        if target_acc:
-            selected_acc = self.account_cb.currentData() or ""
-            if selected_acc and selected_acc != target_acc:
-                mode = "모의투자" if self.is_mock else "실계좌"
-                QMessageBox.critical(
-                    self, "⛔ 계좌 불일치",
-                    f"현재 선택된 계좌({selected_acc[:4]}****)가\n"
-                    f"{mode} 허용 계좌({target_acc[:4]}****)와 일치하지 않습니다.\n\n"
-                    f"secrets.json의 {'mock' if self.is_mock else 'real'}_target_account를 확인하세요."
-                )
-                return
+        if not target_acc:
+            QMessageBox.warning(self, "계좌 미설정", "매매할 계좌가 설정되지 않았습니다.\n계좌변경 버튼으로 계좌를 선택해주세요.")
+            return
 
         selected = []
         for i in range(self.condition_list.count()):
@@ -1309,7 +1340,8 @@ class TradingUI(QMainWindow):
             QMessageBox.warning(self, "경고", "최소 1개의 조건식을 선택해주세요.")
             return
 
-        self.account_cb.setEnabled(False)
+        # 매매 중 계좌변경/조건식 변경 차단
+        self.btn_change_account.setEnabled(False)
         self.condition_list.setEnabled(False)
         self.is_trading_started = True
 

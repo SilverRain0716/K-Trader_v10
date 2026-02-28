@@ -191,9 +191,7 @@ DEFAULT_CONFIG = {
     "default_conditions": ["나의급등주02"],
     "order_type": "03",  # [개선 #3] "03"=시장가, "06"=최유리지정가
 
-    # UI 편의: 마지막 선택 계좌(모의/실) — 자동 복원용
-    "last_account_mock": "",
-    "last_account_real": "",
+    # 계좌는 secrets.json의 mock_target_account / real_target_account를 사용 (config 불필요)
 
     # 글로벌 기본 매매 파라미터 (조건식별 오버라이드 없으면 이 값 사용)
     "profit": 2.3,
