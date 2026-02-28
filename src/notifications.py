@@ -347,7 +347,7 @@ class Notifier:
         tag = _mode_tag(is_mock)
 
         msg = (
-            f"🟢 **[봇 가동] K-Trader Master 자동매매 시작**\n"
+            f"🟢 **[봇 가동] K-Trader 자동매매 시작**\n"
             f"{mode_hdr}\n"
             f"━━━━━━━━━━━━━━━━━━━\n"
             f"🖥️ 계좌 모드: {tag}\n"
@@ -437,7 +437,7 @@ class Notifier:
         tag = _mode_tag(is_mock)
 
         msg = (
-            f"🔴 **[봇 종료] K-Trader Master 최종 리포트**\n"
+            f"🔴 **[봇 종료] K-Trader 최종 리포트**\n"
             f"{mode_hdr}\n"
             f"━━━━━━━━━━━━━━━━━━━\n"
             f"🖥️ 계좌 모드: {tag}\n"

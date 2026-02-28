@@ -1,5 +1,5 @@
 """
-K-Trader Master - UI 대시보드 (프론트엔드 프로세스)
+K-Trader - UI 대시보드 (프론트엔드 프로세스)
 [Phase 5] 모의/실계좌 서버 자동 감지에 따른 UI 색상 경고 시스템 추가
 """
 import sys
@@ -79,7 +79,7 @@ class TradingUI(QMainWindow):
         self._last_loaded_conditions = None
         self._ui_pre_market_restart_date = None  # 8:50 UI측 강제 재시작 하루 1회 플래그
 
-        self.setWindowTitle(f"K-Trader Master v{__version__}")
+        self.setWindowTitle(f"K-Trader v{__version__}")
         self.setGeometry(150, 100, 1150, 950)
         self.setStyleSheet(DARK_THEME_QSS)
 
@@ -113,7 +113,7 @@ class TradingUI(QMainWindow):
     def _setup_tray(self):
         self.tray = QSystemTrayIcon(self)
         self.tray.setIcon(self.style().standardIcon(self.style().SP_ComputerIcon))
-        self.tray.setToolTip(f"K-Trader Master v{__version__}")
+        self.tray.setToolTip(f"K-Trader v{__version__}")
 
         menu = QMenu()
         show_action = QAction("📊 대시보드 열기", self)
@@ -151,7 +151,7 @@ class TradingUI(QMainWindow):
         # [Fix] 엔진이 이미 살아있으면 중복 스폰 방지
         self._spawn_pending = False
         if self.engine_proc and self.engine_proc.poll() is None:
-            logger.debug("[UI] _spawn_engine 호출 무시: 엔진 이미 실행 중")
+            logger.info("[UI] _spawn_engine 호출 무시: 엔진 이미 실행 중 (PID=%s)", self.engine_proc.pid)
             return
 
         main_script = os.path.join(BASE_DIR, "main.py")
@@ -174,15 +174,20 @@ class TradingUI(QMainWindow):
 
         if self.engine_proc and self.engine_proc.poll() is not None:
             exit_code = self.engine_proc.returncode
-            if exit_code == 0:
-                if self.engine_status != "OFFLINE":
-                    logger.info("🌙 [UI] 엔진이 정상적으로 종료되었습니다.")
-                    self.status_label.setText("✅ 엔진 안전 종료 완료")
-                    self.status_label.setStyleSheet(f"color: {COLORS['accent_blue']};")
-                    self.engine_status = "OFFLINE"
-                    self._last_loaded_conditions = None
+            if exit_code == 0 and self.engine_status != "OFFLINE":
+                # IPC 연결 후 정상 종료 (장 마감 자동 종료 등) → 재시작 안 함
+                logger.info("🌙 [UI] 엔진이 정상적으로 종료되었습니다.")
+                self.status_label.setText("✅ 엔진 안전 종료 완료")
+                self.status_label.setStyleSheet(f"color: {COLORS['accent_blue']};")
+                self.engine_status = "OFFLINE"
+                self._last_loaded_conditions = None
                 self.engine_proc = None
                 return
+            elif exit_code == 0 and self.engine_status == "OFFLINE":
+                # IPC 연결 전에 code 0으로 종료 (키움 초기화 실패 등) → 크래시로 처리
+                logger.warning("⚠️ [UI] 엔진이 연결 전에 종료됨 (code 0) → 재시작 시도")
+                self._send_log("⚠️ 엔진이 연결 전에 종료됨 (초기화 실패?) → 재시작 시도")
+                exit_code = -1  # 이하 크래시 처리 로직으로 넘김
 
             logger.warning(f"⚠️ [UI] 엔진 프로세스 사망 감지 (exit={exit_code})")
             if self._engine_crash_count < self._max_engine_restarts:
@@ -304,9 +309,14 @@ class TradingUI(QMainWindow):
             sync_badge = " ⚠"
 
         if new_status != self.engine_status:
+            # 엔진이 OFFLINE → 연결 상태로 처음 전환되면 크래시 카운터 리셋
+            if self.engine_status == "OFFLINE" and new_status not in ("OFFLINE",):
+                self._engine_crash_count = 0
+                logger.info(f"✅ [UI] 엔진 연결 확인 → 크래시 카운터 초기화 (status: {new_status})")
+
             self.engine_status = new_status
             # phase는 엔진이 내려준 값을 우선 사용
-            
+
             # [수정] 모의/실계좌 시각적 구분 추가
             if new_status == "READY_MOCK":
                 self.is_mock = True
