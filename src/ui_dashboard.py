@@ -746,7 +746,8 @@ class TradingUI(QMainWindow):
         lbl = QLabel("조건식"); lbl.setObjectName("setting_label")
         s1.addWidget(lbl, 0, 0)
         self.condition_list = QListWidget()
-        self.condition_list.setMaximumHeight(72)
+        self.condition_list.setMinimumHeight(100)
+        self.condition_list.setMaximumHeight(140)
         self.condition_list.itemChanged.connect(self._mark_config_dirty)
         s1.addWidget(self.condition_list, 0, 1, 3, 1)
 
