@@ -76,31 +76,63 @@ def today_str(fmt="%Y-%m-%d"):
     return datetime.datetime.now().strftime(fmt)
 
 
-# ── 사용자 데이터 디렉토리 (엔진/UI 공용) ──────────────────────
+# ── 앱 데이터 디렉토리 허브 (엔진/UI/웹모니터 공용) ────────────
+def get_app_dir() -> str:
+    """
+    K-Trader 쓰기 가능 앱 데이터 루트 디렉토리.
+      Windows : %LOCALAPPDATA%\\K-Trader
+      Linux/Mac: ~/.k-trader
+    환경변수 KTRADER_APP_DIR 으로 경로 오버라이드 가능 (VPS/테스트 환경 대응).
+    """
+    import os
+    import sys
+    env_dir = os.environ.get("KTRADER_APP_DIR", "").strip()
+    if env_dir:
+        return env_dir
+    if sys.platform == "win32":
+        localappdata = os.environ.get(
+            "LOCALAPPDATA",
+            os.path.join(os.path.expanduser("~"), "AppData", "Local"),
+        )
+        return os.path.join(localappdata, "K-Trader")
+    return os.path.join(os.path.expanduser("~"), ".k-trader")
+
+
 def get_user_data_dir() -> str:
     """버전/폴더가 달라도 유지되는 사용자 데이터 디렉토리."""
     import os
-    env_dir = os.environ.get("KTRADER_DATA_DIR")
+    env_dir = os.environ.get("KTRADER_DATA_DIR", "").strip()
     if env_dir:
         return env_dir
-    home = os.path.expanduser("~")
-    return os.path.join(home, "KTraderMaster", "data")
+    return os.path.join(get_app_dir(), "data")
 
 
-def resolve_db_path(base_dir: str) -> str:
-    """DB 경로를 결정하고, 필요 시 기존 DB를 마이그레이션합니다."""
+def resolve_db_path(base_dir: str = "") -> str:
+    """
+    DB 경로 결정. 구버전 경로에서 자동 마이그레이션.
+    마이그레이션 우선순위:
+      1) ~/KTraderMaster/data/   (v7.4 이하 사용자 경로)
+      2) base_dir/data/          (개발 환경 / 구형 설치 경로)
+    """
     import os
     import shutil
     user_data_dir = get_user_data_dir()
     os.makedirs(user_data_dir, exist_ok=True)
     target = os.path.join(user_data_dir, "ktrader_history.db")
-    legacy = os.path.join(base_dir, "data", "ktrader_history.db")
-    try:
-        if (not os.path.exists(target)) and os.path.exists(legacy):
-            shutil.copy2(legacy, target)
-            logger.info(f"✅ [DB] 기존 DB를 사용자 경로로 마이그레이션: {target}")
-    except Exception as e:
-        logger.warning(f"⚠️ [DB] DB 마이그레이션 실패(계속 진행): {e}")
+    if not os.path.exists(target):
+        legacy_candidates = [
+            os.path.join(os.path.expanduser("~"), "KTraderMaster", "data", "ktrader_history.db"),
+        ]
+        if base_dir:
+            legacy_candidates.append(os.path.join(base_dir, "data", "ktrader_history.db"))
+        for legacy in legacy_candidates:
+            try:
+                if os.path.exists(legacy):
+                    shutil.copy2(legacy, target)
+                    logger.info(f"✅ [DB] 마이그레이션: {legacy} → {target}")
+                    break
+            except Exception as e:
+                logger.warning(f"⚠️ [DB] 마이그레이션 실패(계속 진행): {e}")
     return target
 
 

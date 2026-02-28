@@ -1,10 +1,12 @@
 """
-K-Trader Master v7.0 - 웹 모니터링 대시보드
+K-Trader v7.0 - 웹 모니터링 대시보드
 [개선 #1] DB 폴링 → JSON 파일 기반 상태 읽기 (IPC 아키텍처 호환)
 [개선 #2] 누락 메서드(read_engine_state, get_daily_pnl) 에러 해결
 [개선 #3] 모바일 브라우저 대응 및 자동 새로고침
+[Item 1] 경로를 앱 데이터 디렉토리로 통일
+[Item 2] HTTP Basic Auth + 전역 예외 처리 추가
 
-실행: python -m src.web_monitor
+실행: python -m src.web_monitor [--host 0.0.0.0] [--port 5000]
 브라우저: http://localhost:5000
 """
 import os
@@ -12,29 +14,63 @@ import sys
 import json
 import logging
 import datetime
+import functools
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 try:
-    from flask import Flask, render_template_string, jsonify
+    from flask import Flask, render_template_string, jsonify, request, Response
 except ImportError:
     print("Flask가 설치되어 있지 않습니다. pip install flask 로 설치해주세요.")
     sys.exit(1)
 
 from src.database import Database
 from src.market_calendar import MarketCalendar
-from src.utils import resolve_db_path  # [Fix #5] utils와 동일한 DB 경로 함수 사용
+from src.utils import resolve_db_path, get_app_dir
+from src.config_manager import SecretManager
 
 logger = logging.getLogger("ktrader")
 
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DATA_DIR = os.path.join(BASE_DIR, "data")
+# [Item 1] 경로 통일
+_APP_DIR = get_app_dir()
 
 app = Flask(__name__)
-# [Fix #5] 하드코딩 경로 대신 resolve_db_path()로 일관된 DB 위치 사용
-#          engine.py와 web_monitor.py가 동일한 DB 파일을 바라보도록 통일.
-db = Database(resolve_db_path(BASE_DIR))
+db = Database(resolve_db_path())
 calendar = MarketCalendar()
+
+# ── [Item 2] HTTP Basic Auth ──────────────────────────────────────
+_web_password: str = ""   # run_web_monitor() 호출 시 secrets에서 주입
+
+
+def _require_auth(f):
+    """모든 라우트에 Basic Auth를 적용하는 데코레이터."""
+    @functools.wraps(f)
+    def decorated(*args, **kwargs):
+        if not _web_password:
+            # 비밀번호 미설정 → localhost 접근만 허용
+            if request.remote_addr not in ("127.0.0.1", "::1"):
+                return Response(
+                    "웹 모니터 비밀번호가 설정되지 않았습니다.\n"
+                    "secrets.json 에 web_monitor_password 를 추가하세요.",
+                    403,
+                )
+            return f(*args, **kwargs)
+        auth = request.authorization
+        if not auth or auth.password != _web_password:
+            return Response(
+                "인증이 필요합니다.",
+                401,
+                {"WWW-Authenticate": 'Basic realm="K-Trader Monitor"'},
+            )
+        return f(*args, **kwargs)
+    return decorated
+
+
+@app.errorhandler(Exception)
+def _handle_exception(e):
+    """[Item 2] 전역 예외 처리 — 스택 트레이스를 클라이언트에 노출하지 않음."""
+    logger.error(f"[웹모니터] 처리되지 않은 예외: {e}", exc_info=True)
+    return jsonify({"error": "서버 내부 오류가 발생했습니다."}), 500
 
 # ── HTML 템플릿 (단일 파일) ──────────────────────
 DASHBOARD_HTML = """
@@ -169,30 +205,26 @@ DASHBOARD_HTML = """
 """
 
 
-@app.route('/')
+@app.route("/")
+@_require_auth
 def dashboard():
     return render_template_string(DASHBOARD_HTML)
 
 
-@app.route('/api/status')
+@app.route("/api/status")
+@_require_auth
 def api_status():
     """[v7.0] JSON 파일 기반 상태 읽기 (엔진이 0.5초마다 갱신)."""
     state = db.read_engine_state()
-
     if not state:
         return jsonify({
             "engine_status": "OFFLINE",
-            "deposit": 0,
-            "profit": 0,
-            "holdings": 0,
-            "portfolio": {},
-            "market_phase": calendar.status_text(),
+            "deposit": 0, "profit": 0, "holdings": 0,
+            "portfolio": {}, "market_phase": calendar.status_text(),
             "timestamp": datetime.datetime.now().isoformat(),
         })
-
     port = state.get("portfolio", {})
-    holding_count = len([c for c, d in port.items() if d.get('qty', 0) > 0])
-
+    holding_count = len([c for c, d in port.items() if d.get("qty", 0) > 0])
     return jsonify({
         "engine_status": state.get("status", "OFFLINE"),
         "deposit": state.get("deposit", 0),
@@ -204,37 +236,49 @@ def api_status():
     })
 
 
-@app.route('/api/trades')
+@app.route("/api/trades")
+@_require_auth
 def api_trades():
-    try:
-        rows = db.get_today_trades()
-        return jsonify(rows)
-    except Exception:
-        return jsonify([])
+    rows = db.get_today_trades()
+    return jsonify(rows)
 
 
-@app.route('/api/statistics')
+@app.route("/api/statistics")
+@_require_auth
 def api_statistics():
-    try:
-        stats = db.get_statistics(30)
-        return jsonify(stats or {})
-    except Exception:
-        return jsonify({})
+    stats = db.get_statistics(30)
+    return jsonify(stats or {})
 
 
-@app.route('/api/daily_pnl')
+@app.route("/api/daily_pnl")
+@_require_auth
 def api_daily_pnl():
-    """[v7.0] database.py에 추가된 get_daily_pnl() 사용."""
+    rows = db.get_daily_pnl(30)
+    return jsonify([{"date": r[0], "pnl": r[1], "trades": r[2]} for r in rows])
+
+
+def run_web_monitor(host: str = "127.0.0.1", port: int = 5000):
+    """
+    웹 모니터링 서버 실행.
+    [Item 2] 기본 host를 127.0.0.1(로컬 전용)으로 변경.
+             외부 접근이 필요한 경우 --host 0.0.0.0 으로 명시적 지정.
+    """
+    global _web_password
+    # secrets 에서 웹 모니터 비밀번호 로드
     try:
-        rows = db.get_daily_pnl(30)
-        return jsonify([{"date": r[0], "pnl": r[1], "trades": r[2]} for r in rows])
-    except Exception:
-        return jsonify([])
+        cfg_dir = os.path.join(_APP_DIR, "config")
+        secrets = SecretManager(cfg_dir).load()
+        _web_password = secrets.get("web_monitor_password", "").strip()
+    except Exception as e:
+        logger.warning(f"⚠️ [웹모니터] secrets 로드 실패: {e}")
+        _web_password = ""
 
+    if _web_password:
+        print(f"🔒 K-Trader 웹 모니터: Basic Auth 활성 (비밀번호 설정됨)")
+    else:
+        print(f"⚠️  K-Trader 웹 모니터: 비밀번호 미설정 → localhost({host}) 접근만 허용")
 
-def run_web_monitor(host="0.0.0.0", port=5000):
-    """웹 모니터링 서버 실행."""
-    print(f"🌐 K-Trader v7.0 웹 모니터링: http://localhost:{port}")
+    print(f"🌐 K-Trader 웹 모니터링: http://{host}:{port}")
     app.run(host=host, port=port, debug=False, threaded=True)
 
 

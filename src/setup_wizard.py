@@ -25,15 +25,18 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QFont, QPixmap
 
-# PyInstaller --onefile 로 빌드 시 __file__이 임시 폴더를 가리키므로
-# sys.executable 기준으로 실제 exe가 있는 폴더를 BASE_DIR로 사용합니다.
-if getattr(sys, 'frozen', False):
-    BASE_DIR = os.path.dirname(sys.executable)
-else:
-    BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from src.utils import get_app_dir
 
-CONFIG_DIR = os.path.join(BASE_DIR, "config")
+# [Item 1] CONFIG_DIR 를 쓰기 가능한 앱 데이터 디렉토리로 통일
+CONFIG_DIR = os.path.join(get_app_dir(), "config")
 os.makedirs(CONFIG_DIR, exist_ok=True)
+
+# 레거시 경로 (마이그레이션 여부 확인 전용 — 쓰기 금지)
+if getattr(sys, 'frozen', False):
+    _LEGACY_BASE_DIR = os.path.dirname(sys.executable)
+else:
+    _LEGACY_BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 def check_kiwoom_installed() -> bool:
@@ -469,8 +472,65 @@ class CalendarApiPage(QWizardPage):
         self.registerField("calendar_api_key", self.api_key_input)
 
 
+class KiwoomAutoLoginPage(QWizardPage):
+    """
+    [Item 4] 키움 HTS 자동로그인 체크리스트.
+    두 항목 모두 체크해야 다음 단계(CompletePage)로 진행 가능.
+    미체크 상태에서는 '다음' 버튼이 비활성화됨.
+    """
+
+    def __init__(self):
+        super().__init__()
+        self.setTitle("키움 HTS 필수 설정 확인")
+        self.setSubTitle(
+            "아래 두 항목을 키움 HTS에서 완료한 뒤 체크하세요.\n"
+            "두 항목 모두 체크해야 다음 단계로 진행할 수 있습니다."
+        )
+
+        layout = QVBoxLayout()
+        layout.setSpacing(16)
+
+        warn = QLabel(
+            "⚠️  이 설정이 완료되어 있지 않으면 실제 주문 순간에 비밀번호\n"
+            "    입력 팝업이 떠서 자동매매가 완전히 차단됩니다."
+        )
+        warn.setWordWrap(True)
+        warn.setStyleSheet("color: #e74c3c; font-weight: bold; padding: 8px;")
+        layout.addWidget(warn)
+
+        sep = QFrame()
+        sep.setFrameShape(QFrame.HLine)
+        sep.setStyleSheet("color: #555;")
+        layout.addWidget(sep)
+
+        self.cb_pw_save = QCheckBox(
+            "키움 HTS → [계좌관리] → [계좌 비밀번호 저장] 완료"
+        )
+        self.cb_autologin = QCheckBox(
+            "키움 HTS → [시스템 설정] → [자동 로그인] 완료"
+        )
+
+        for cb in (self.cb_pw_save, self.cb_autologin):
+            cb.setStyleSheet("font-size: 13px; padding: 6px 4px;")
+            cb.stateChanged.connect(self.completeChanged.emit)
+            layout.addWidget(cb)
+
+        hint = QLabel(
+            "💡 키움 HTS가 설치되어 있지 않으면 키움증권 홈페이지에서 먼저 설치하세요."
+        )
+        hint.setWordWrap(True)
+        hint.setStyleSheet("color: #888; font-size: 11px; padding-top: 12px;")
+        layout.addWidget(hint)
+
+        layout.addStretch()
+        self.setLayout(layout)
+
+    def isComplete(self):
+        return self.cb_pw_save.isChecked() and self.cb_autologin.isChecked()
+
+
 class CompletePage(QWizardPage):
-    """페이지 5: 설정 완료."""
+    """페이지 6: 설정 완료."""
 
     def __init__(self):
         super().__init__()
@@ -589,6 +649,7 @@ class SetupWizard(QWizard):
         self.addPage(DiscordPage())
         self.addPage(EmailPage())
         self.addPage(CalendarApiPage())
+        self.addPage(KiwoomAutoLoginPage())   # [Item 4] 자동로그인 체크리스트
         self.addPage(CompletePage())
 
         self.setButtonText(QWizard.NextButton, "다음 →")
@@ -598,10 +659,15 @@ class SetupWizard(QWizard):
 
 
 def should_run_wizard() -> bool:
-    """secrets.json/secrets.enc가 없으면 마법사 실행 필요."""
-    secrets_path = os.path.join(CONFIG_DIR, "secrets.json")
-    encrypted_path = os.path.join(CONFIG_DIR, "secrets.enc")
-    return not os.path.exists(secrets_path) and not os.path.exists(encrypted_path)
+    """
+    마법사 실행 필요 여부 판단.
+    새 경로(CONFIG_DIR) 또는 레거시 경로에 secrets 파일이 있으면 생략.
+    """
+    for config_dir in (CONFIG_DIR, os.path.join(_LEGACY_BASE_DIR, "config")):
+        if (os.path.exists(os.path.join(config_dir, "secrets.enc")) or
+                os.path.exists(os.path.join(config_dir, "secrets.json"))):
+            return False
+    return True
 
 
 def run_wizard():

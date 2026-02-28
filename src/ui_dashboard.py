@@ -37,15 +37,18 @@ from src.config_manager import ConfigManager, SecretManager
 from src.market_calendar import MarketCalendar
 from src.notifications import Notifier
 from src.styles import DARK_THEME_QSS, COLORS, profit_color
-from src.utils import calc_sell_cost, get_user_data_dir, resolve_db_path, __version__
+from src.utils import calc_sell_cost, get_user_data_dir, get_app_dir, resolve_db_path, __version__
 from src.ipc import UI_IPCServer
 
 logger = logging.getLogger("ktrader")
 
-CONFIG_DIR = os.path.join(BASE_DIR, "config")
-DATA_DIR = os.path.join(BASE_DIR, "data")
-LOGS_DIR = os.path.join(BASE_DIR, "logs")
-REPORTS_DIR = os.path.join(BASE_DIR, "reports")
+# [Item 1] 설치 디렉토리(읽기전용)와 앱 데이터 디렉토리(쓰기)를 분리
+BASE_DIR   = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_APP_DIR   = get_app_dir()
+CONFIG_DIR = os.path.join(_APP_DIR, "config")
+DATA_DIR   = os.path.join(_APP_DIR, "data")
+LOGS_DIR   = os.path.join(_APP_DIR, "logs")
+REPORTS_DIR = os.path.join(_APP_DIR, "reports")
 
 for d in [CONFIG_DIR, DATA_DIR, LOGS_DIR, REPORTS_DIR]:
     os.makedirs(d, exist_ok=True)
@@ -57,7 +60,7 @@ class TradingUI(QMainWindow):
     def __init__(self):
         super().__init__()
 
-        self.db = Database(resolve_db_path(BASE_DIR))
+        self.db = Database(resolve_db_path())
         self.config_mgr = ConfigManager(CONFIG_DIR)
         self.config_mgr.load()
         self.secrets = SecretManager(CONFIG_DIR).load()

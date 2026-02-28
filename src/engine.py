@@ -31,51 +31,100 @@ from src.database import Database
 from src.config_manager import ConfigManager, SecretManager
 from src.market_calendar import MarketCalendar
 from src.notifications import Notifier
-from src.utils import safe_int, calc_sell_cost, get_user_data_dir, resolve_db_path, __version__
+from src.utils import safe_int, calc_sell_cost, get_user_data_dir, get_app_dir, resolve_db_path, __version__
 from src.ipc import Engine_IPCClient
 
 logger = logging.getLogger("ktrader")
-LOGS_DIR = os.path.join(BASE_DIR, "logs")
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# [Item 1] 로그는 쓰기 가능한 앱 데이터 디렉토리에 저장
+LOGS_DIR = os.path.join(get_app_dir(), "logs")
 os.makedirs(LOGS_DIR, exist_ok=True)
 
 
 class TRScheduler(QObject):
-    """키움증권 전역 API 호출(TR) 속도 제한 스케줄러."""
+    """
+    키움증권 API 호출 속도 제한 스케줄러.
+
+    [Item 3] TR 큐와 ORDER 큐를 분리하여 조회 지연이 주문을 막는 병목 해소.
+      - TR 큐   : CommRqData  — 250ms 간격 (키움 제한: 5회/초)
+      - ORDER 큐: SendOrder   — 100ms 간격 (별도 제한)
+                                SELL(매도·취소) 우선, BUY(매수·취소) 후순위
+    두 타이머는 독립적으로 동작하므로 손절 주문이 TR 조회에 밀리지 않는다.
+    """
+
     def __init__(self, kiwoom):
         super().__init__()
         self.kiwoom = kiwoom
-        self.queue = []
-        self.last_send_time = 0
-        self.timer = QTimer(self)
-        self.timer.timeout.connect(self._process)
-        self.timer.start(250)
 
+        self.tr_queue    = []   # TR 조회 전용 큐
+        self.order_queue = []   # 주문 전용 큐 (우선순위 정렬)
+
+        self._last_tr_call_ts    = 0.0
+        self._last_order_call_ts = 0.0
+
+        # TR 타이머: 250ms (키움 CommRqData 제한 준수)
+        self.tr_timer = QTimer(self)
+        self.tr_timer.timeout.connect(self._process_tr)
+        self.tr_timer.start(250)
+
+        # ORDER 타이머: 100ms (SendOrder 는 TR 보다 제한이 완화됨)
+        self.order_timer = QTimer(self)
+        self.order_timer.timeout.connect(self._process_order)
+        self.order_timer.start(100)
+
+    # ── 외부 호출 API (기존 호출부 변경 없음) ─────────────────────
     def request_tr(self, rqname, trcode, next_str, screen_no, inputs):
-        self.queue.append({'type': 'TR', 'rqname': rqname, 'trcode': trcode,
-                           'next': next_str, 'screen_no': screen_no, 'inputs': inputs})
+        self.tr_queue.append({
+            'rqname': rqname, 'trcode': trcode,
+            'next': next_str, 'screen_no': screen_no, 'inputs': inputs,
+        })
 
-    def request_order(self, rqname, screen_no, acc_no, order_type, code, qty, price, hoga_gb, org_order_no):
-        self.queue.append({'type': 'ORDER', 'args': [rqname, screen_no, acc_no, order_type, code, qty, price, hoga_gb, org_order_no]})
+    def request_order(self, rqname, screen_no, acc_no, order_type,
+                      code, qty, price, hoga_gb, org_order_no):
+        """
+        order_type: 1=매수, 2=매도, 3=매수취소, 4=매도취소
+        매도(2)·매도취소(4) → priority 0 (선처리)
+        매수(1)·매수취소(3) → priority 1 (후처리)
+        """
+        priority = 0 if order_type in (2, 4) else 1
+        item = {
+            'priority': priority,
+            'args': [rqname, screen_no, acc_no, order_type,
+                     code, qty, price, hoga_gb, org_order_no],
+        }
+        # 우선순위 순서로 삽입 (SELL 이 항상 BUY 앞)
+        for i, existing in enumerate(self.order_queue):
+            if priority < existing['priority']:
+                self.order_queue.insert(i, item)
+                return
+        self.order_queue.append(item)
 
-    def _process(self):
-        if not self.queue:
+    # ── 내부 처리 ─────────────────────────────────────────────────
+    def _process_tr(self):
+        if not self.tr_queue:
             return
-        now = time.time()
-        if now - self.last_send_time < 0.25:
+        if time.time() - self._last_tr_call_ts < 0.25:
             return
+        req = self.tr_queue.pop(0)
+        for k, v in req['inputs'].items():
+            self.kiwoom.dynamicCall("SetInputValue(QString, QString)", k, v)
+        self.kiwoom.dynamicCall(
+            "CommRqData(QString, QString, int, QString)",
+            req['rqname'], req['trcode'], req['next'], req['screen_no'],
+        )
+        self._last_tr_call_ts = time.time()
 
-        req = self.queue.pop(0)
-        if req['type'] == 'TR':
-            for k, v in req['inputs'].items():
-                self.kiwoom.dynamicCall("SetInputValue(QString, QString)", k, v)
-            self.kiwoom.dynamicCall("CommRqData(QString, QString, int, QString)",
-                                    req['rqname'], req['trcode'], req['next'], req['screen_no'])
-        elif req['type'] == 'ORDER':
-            self.kiwoom.dynamicCall(
-                "SendOrder(QString, QString, QString, int, QString, int, int, QString, QString)",
-                req['args']
-            )
-        self.last_send_time = time.time()
+    def _process_order(self):
+        if not self.order_queue:
+            return
+        if time.time() - self._last_order_call_ts < 0.10:
+            return
+        item = self.order_queue.pop(0)
+        self.kiwoom.dynamicCall(
+            "SendOrder(QString, QString, QString, int, QString, int, int, QString, QString)",
+            item['args'],
+        )
+        self._last_order_call_ts = time.time()
 
 
 class TradingEngine(QMainWindow):
@@ -83,10 +132,13 @@ class TradingEngine(QMainWindow):
         super().__init__()
         logger.info("🔥 [엔진] 매매 엔진 프로세스 가동 시작 (하이브리드 모드)")
 
-        self.db = Database(resolve_db_path(BASE_DIR))
-        self.config_mgr = ConfigManager(os.path.join(BASE_DIR, "config"))
+        # [Item 1] config/DB 경로를 쓰기 가능한 앱 데이터 디렉토리로 통일
+        _app_cfg = os.path.join(get_app_dir(), "config")
+        os.makedirs(_app_cfg, exist_ok=True)
+        self.db = Database(resolve_db_path())
+        self.config_mgr = ConfigManager(_app_cfg)
         self.config_mgr.load()
-        self.secrets = SecretManager(os.path.join(BASE_DIR, "config")).load()
+        self.secrets = SecretManager(_app_cfg).load()
         self.calendar = MarketCalendar(api_key=self.secrets.get("calendar_api_key"))
         self._last_market_phase = self.calendar.get_market_phase()
         self._market_open_notified_date = None
