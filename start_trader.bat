@@ -14,12 +14,15 @@ if not exist "%TRADER_EXE%" (
 echo [%date% %time%] K-Trader.exe found >> "%LOG%"
 echo K-Trader.exe found
 
+REM [Fix Maintenance] 스케줄러 기동 시 K-Trader.exe 가 좀비 상태로 살아있을 수 있음.
+REM 키움 -101/-106 점검 단절로 엔진은 죽고 UI만 남아있는 경우 강제 종료 후 재시작.
+REM 이를 위해 기존 프로세스를 무조건 종료하고 새로 시작한다.
 tasklist /FI "IMAGENAME eq K-Trader.exe" 2>NUL | find /I "K-Trader.exe" >NUL
 if %ERRORLEVEL%==0 (
-    echo [%date% %time%] Already running - skip >> "%LOG%"
-    echo Already running - skip
-    pause
-    exit /B 0
+    echo [%date% %time%] K-Trader.exe already running - force kill and restart >> "%LOG%"
+    echo K-Trader.exe already running - force kill and restart
+    taskkill /F /IM K-Trader.exe >NUL 2>&1
+    timeout /t 3 /nobreak >NUL
 )
 
 echo [%date% %time%] Starting K-Trader... >> "%LOG%"
@@ -28,5 +31,4 @@ start "" "%TRADER_EXE%"
 echo [%date% %time%] Done >> "%LOG%"
 echo Done
 
-pause
 exit /B 0
