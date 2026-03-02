@@ -5,21 +5,19 @@
 :: 이미 실행 중이면 자동으로 스킵합니다.
 :: ============================================================
 
-:: K-Trader 설치 경로 (본인 경로로 수정하세요)
-set TRADER_DIR=C:\K-Trader
+:: K-Trader 실행 파일 경로
+set TRADER_EXE=C:\Users\Administrator\AppData\Local\Programs\K-Trader\K-Trader.exe
 
 :: ── 이미 실행 중인지 확인 ─────────────────────────────────────
-:: engine 프로세스 확인 (python 프로세스 중 engine 인자 포함)
-wmic process where "name='python.exe'" get commandline 2>nul | find "engine" >nul
+tasklist /FI "IMAGENAME eq K-Trader.exe" 2>NUL | find /I "K-Trader.exe" >NUL
 if %ERRORLEVEL%==0 (
-    echo [%date% %time%] K-Trader engine 이미 실행 중 - 스킵
+    echo [%date% %time%] K-Trader 이미 실행 중 - 스킵
     exit /B 0
 )
 
 :: ── 실행 중이 아니면 시작 ─────────────────────────────────────
-echo [%date% %time%] K-Trader engine 시작
-cd /d "%TRADER_DIR%"
-start "" pythonw main.py engine
+echo [%date% %time%] K-Trader 시작
+start "" "%TRADER_EXE%"
 
-echo [%date% %time%] K-Trader engine 시작 완료
+echo [%date% %time%] K-Trader 시작 완료
 exit /B 0
