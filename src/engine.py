@@ -735,6 +735,27 @@ class TradingEngine(QMainWindow):
                 pass
         else:
             self.current_status = "LOGIN_FAILED"
+
+            # ── 점검/강제 단절 에러 → 프로그램 종료 (스케줄러가 재시작) ──────
+            # -101: 사용자 정보교환 실패 (점검 중 단절)
+            # -106: 통신 연결 종료 (키움 서버 점검)
+            MAINTENANCE_ERRORS = (-101, -106)
+            if err_code in MAINTENANCE_ERRORS:
+                logger.warning(
+                    f"⚠️ [엔진] 키움 점검/단절 감지 (err={err_code}) "
+                    f"→ 프로그램 종료 후 스케줄러 재시작 대기"
+                )
+                self.notifier.notify_error(
+                    "키움증권 연결 단절 → 프로그램 종료",
+                    f"에러 코드: {err_code}\n"
+                    f"점검으로 인한 단절입니다. 프로그램을 종료합니다.\n"
+                    f"스케줄러가 자동으로 재시작합니다."
+                )
+                time.sleep(3)   # Discord 알림 전송 대기
+                sys.exit(1)     # 종료 → Windows 스케줄러가 재시작
+            # ──────────────────────────────────────────────────────────────────
+
+            # 그 외 에러: 기존 지수 백오프 재연결 유지
             # 지수 백오프: 1회→30초, 2회→60초, 3회~→120초 후 재연결 시도
             delay_secs = min(30 * (2 ** min(self._reconnect_count, 2)), 120)
             self._reconnect_count += 1
