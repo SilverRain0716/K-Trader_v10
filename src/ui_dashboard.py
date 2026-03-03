@@ -21,8 +21,8 @@ from PyQt5.QtWidgets import (
     QListWidget, QListWidgetItem, QMessageBox, QSystemTrayIcon, QMenu, QAction,
     QDialog
 )
-from PyQt5.QtCore import QTimer, Qt
-from PyQt5.QtGui import QIcon, QColor, QFont, QBrush
+from PyQt5.QtCore import QTimer, Qt, QRect, QPropertyAnimation, QEasingCurve, pyqtProperty, pyqtSignal
+from PyQt5.QtGui import QIcon, QColor, QFont, QBrush, QPainter, QPen
 
 # PyInstaller --onedir 빌드 시 __file__은 _internal 폴더 안을 가리키므로
 # sys.executable(K-Trader.exe) 기준의 폴더를 사용합니다.
@@ -52,6 +52,114 @@ REPORTS_DIR = os.path.join(_APP_DIR, "reports")
 
 for d in [CONFIG_DIR, DATA_DIR, LOGS_DIR, REPORTS_DIR]:
     os.makedirs(d, exist_ok=True)
+
+
+class ToggleSwitch(QWidget):
+    """애니메이션 토글 스위치 (QCheckBox 대체)."""
+
+    stateChanged = pyqtSignal(int)
+
+    def __init__(self, text="", parent=None):
+        super().__init__(parent)
+        self._checked = False
+        self._text = text
+        self._circle_pos = 3.0        # 애니메이션용 원 위치
+        self._anim = QPropertyAnimation(self, b"circle_pos", self)
+        self._anim.setDuration(180)
+        self._anim.setEasingCurve(QEasingCurve.InOutQuad)
+        self.setFixedHeight(22)
+        self.setCursor(Qt.PointingHandCursor)
+        self._update_min_width()
+
+    def _update_min_width(self):
+        fm = self.fontMetrics()
+        text_w = fm.horizontalAdvance(self._text) if self._text else 0
+        self.setMinimumWidth(42 + (8 + text_w if text_w else 0))
+
+    def text(self):
+        return self._text
+
+    def setText(self, t):
+        self._text = t
+        self._update_min_width()
+        self.update()
+
+    def isChecked(self):
+        return self._checked
+
+    def setChecked(self, val):
+        self._checked = bool(val)
+        self._circle_pos = 23.0 if self._checked else 3.0
+        self.update()
+
+    def checkState(self):
+        return Qt.Checked if self._checked else Qt.Unchecked
+
+    def mousePressEvent(self, event):
+        self.toggle()
+
+    def toggle(self):
+        self._checked = not self._checked
+        target = 23.0 if self._checked else 3.0
+        self._anim.stop()
+        self._anim.setStartValue(self._circle_pos)
+        self._anim.setEndValue(target)
+        self._anim.start()
+        self.stateChanged.emit(2 if self._checked else 0)
+        self.update()
+
+    @pyqtProperty(float)
+    def circle_pos(self):
+        return self._circle_pos
+
+    @circle_pos.setter
+    def circle_pos(self, val):
+        self._circle_pos = val
+        self.update()
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+
+        track_w, track_h = 42, 22
+        track_x, track_y = 0, 0
+
+        # Track
+        if self._checked:
+            track_color = QColor(77, 163, 255, 60)
+            border_color = QColor(77, 163, 255, 180)
+        else:
+            track_color = QColor(28, 42, 56)
+            border_color = QColor(77, 163, 255, 50)
+
+        p.setBrush(track_color)
+        p.setPen(QPen(border_color, 1.2))
+        p.drawRoundedRect(track_x, track_y, track_w, track_h, 11, 11)
+
+        # Circle
+        circle_r = 8
+        cy = track_y + track_h // 2
+        cx = int(self._circle_pos) + circle_r
+
+        if self._checked:
+            circle_color = QColor(77, 163, 255)
+            p.setBrush(circle_color)
+            p.setPen(Qt.NoPen)
+        else:
+            circle_color = QColor(90, 122, 153)
+            p.setBrush(circle_color)
+            p.setPen(Qt.NoPen)
+
+        p.drawEllipse(cx - circle_r, cy - circle_r, circle_r * 2, circle_r * 2)
+
+        # Text
+        if self._text:
+            p.setPen(QColor(226, 234, 245))
+            p.setFont(self.font())
+            p.drawText(track_w + 8, 0, self.width() - track_w - 8, track_h,
+                       Qt.AlignVCenter | Qt.AlignLeft, self._text)
+
+        p.end()
 
 
 class TradingUI(QMainWindow):
@@ -690,7 +798,8 @@ class TradingUI(QMainWindow):
     def _setup_ui(self):
         main_widget = QWidget()
         main_layout = QVBoxLayout()
-        main_layout.setSpacing(8)
+        main_layout.setSpacing(6)
+        main_layout.setContentsMargins(8, 6, 8, 6)
 
         status_bar = QHBoxLayout()
 
@@ -746,7 +855,8 @@ class TradingUI(QMainWindow):
 
         settings_group = QGroupBox("⚙️ 매매 설정 (변경 시 실시간 핫-리로딩)")
         settings_vbox = QVBoxLayout()
-        settings_vbox.setSpacing(4)
+        settings_vbox.setSpacing(8)
+        settings_vbox.setContentsMargins(4, 4, 4, 4)
 
         # ━━━━━━━━ 섹션 1: 매매 전략 ━━━━━━━━
         h1 = QLabel("매매 전략")
@@ -809,7 +919,7 @@ class TradingUI(QMainWindow):
 
         # Row 2: T.S — 조건식 옆 공간 활용
         ts_layout = QHBoxLayout()
-        self.ts_use_cb = QCheckBox("T.S")
+        self.ts_use_cb = ToggleSwitch("T.S")
         self.ts_use_cb.stateChanged.connect(self._mark_config_dirty)
         self.ts_activation_spin = QDoubleSpinBox()
         self.ts_activation_spin.setRange(0.5, 30.0)
@@ -848,7 +958,7 @@ class TradingUI(QMainWindow):
         s2.setColumnStretch(6, 1)
 
         # Row 0: 분할매수
-        self.split_buy_cb = QCheckBox("분할매수")
+        self.split_buy_cb = ToggleSwitch("분할매수")
         self.split_buy_cb.stateChanged.connect(self._mark_config_dirty)
         s2.addWidget(self.split_buy_cb, 0, 0)
         self.split_buy_rounds_spin = QSpinBox()
@@ -878,7 +988,7 @@ class TradingUI(QMainWindow):
 
         # Row 1: 분할매도 — TS 독립형 (Option C)
         # 1차: 익절% 도달 → ratio1% 매도 / 2차: 익절%+offset% 도달 → 잔여 전량 (TS 없어도 작동)
-        self.split_sell_cb = QCheckBox("분할매도")
+        self.split_sell_cb = ToggleSwitch("분할매도")
         self.split_sell_cb.setToolTip(
             "TS 독립형 분할매도 (Option C)\n"
             "① 익절% 도달 → 1차 비중(ratio1%) 매도\n"
@@ -959,7 +1069,7 @@ class TradingUI(QMainWindow):
         s3.addWidget(self.order_type_cb, 0, 5)
 
         # Row 1: 타임컷 / 마감 / 최소화
-        self.timecut_cb = QCheckBox("⏰ 15:15 타임컷")
+        self.timecut_cb = ToggleSwitch("⏰ 15:15 타임컷")
         self.timecut_cb.setChecked(True)
         self.timecut_cb.stateChanged.connect(self._mark_config_dirty)
         s3.addWidget(self.timecut_cb, 1, 0, 1, 2)
@@ -972,7 +1082,7 @@ class TradingUI(QMainWindow):
         shutdown_layout.addWidget(self.shutdown_cb)
         s3.addLayout(shutdown_layout, 1, 2, 1, 2)
 
-        self.minimize_to_tray_cb = QCheckBox("🗂 최소화 시 트레이로 숨김")
+        self.minimize_to_tray_cb = ToggleSwitch("🗂 최소화 시 트레이로 숨김")
         self.minimize_to_tray_cb.setChecked(self.config_mgr.get("minimize_to_tray", False))
         self.minimize_to_tray_cb.stateChanged.connect(self._mark_config_dirty)
         s3.addWidget(self.minimize_to_tray_cb, 1, 4, 1, 2)
@@ -1042,7 +1152,7 @@ class TradingUI(QMainWindow):
         bl_tab = QWidget()
         bl_layout = QVBoxLayout()
         bl_header = QHBoxLayout()
-        self.bl_toggle_cb = QCheckBox("🔒 블랙리스트 활성화")
+        self.bl_toggle_cb = ToggleSwitch("🔒 블랙리스트 활성화")
         self.bl_toggle_cb.setChecked(self.config_mgr.get("blacklist_enabled", True))
         self.bl_toggle_cb.stateChanged.connect(self._on_blacklist_toggle)
         self.bl_count_label = QLabel("0종목")
