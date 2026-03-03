@@ -1181,6 +1181,9 @@ class TradingEngine(QMainWindow):
         data = self.portfolio.get(code)
         if not data or not data.get('split_buy'):
             return
+        # [Fix] 매도 진행 중이거나 is_manual 종목은 추가 매수 금지
+        if data.get('sell_ordered') or data.get('is_manual'):
+            return
         sb = data['split_buy']
         ep = sb.get('entry_price', 0)
         if ep <= 0:
@@ -1280,6 +1283,31 @@ class TradingEngine(QMainWindow):
                 self.deposit = self.orderable_amount
                 self.db.log_trade("매수", p.get('cond_name', ''), p['name'], code, exec_price, exec_qty, 0)
                 p['status'] = 'HOLDING'
+
+                # [Fix] 분할매수 entry_price를 실제 체결가로 동기화
+                # 주문 시점 curr_p(호가)와 실제 체결가(exec_price)가 다를 수 있어
+                # 트리거 계산 기준을 실제 매수 평단가(buy_price)로 보정합니다.
+                try:
+                    sb = p.get('split_buy')
+                    if sb and p['buy_price'] > 0:
+                        sb['entry_price'] = p['buy_price']
+                        # 1차 부분체결 대비: 2차 이후 round qty를 계획 총수량 기준으로 재계산
+                        # 이미 done=True인 round의 실제 체결 수량 합산 후 미완료 round 재배분
+                        done_qty = sum(r['qty'] for r in sb.get('rounds', []) if r.get('done'))
+                        total_planned = sb.get('total', 0)
+                        remaining_planned = max(0, total_planned - done_qty)
+                        undone = [r for r in sb.get('rounds', []) if not r.get('done')]
+                        if undone and remaining_planned > 0:
+                            # 미완료 round가 하나면 남은 전량 배정, 둘 이상이면 비율 유지
+                            if len(undone) == 1:
+                                undone[0]['qty'] = remaining_planned
+                            else:
+                                total_undone_qty = sum(r['qty'] for r in undone)
+                                if total_undone_qty > 0:
+                                    for r in undone:
+                                        r['qty'] = max(1, int(remaining_planned * r['qty'] / total_undone_qty))
+                except Exception as e:
+                    logger.error(f"❌ [분할매수] entry_price 동기화 오류: {e}")
 
                 # [Critical Fix] 매수 체결 후 실시간 시세 구독 보장 (Safety Net)
                 # 만약 이전 구독이 끊겼더라도, 여기서 재등록하면 가격 갱신이 보장됩니다.
