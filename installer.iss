@@ -1,5 +1,5 @@
-; K-Trader — Inno Setup 인스톨러 스크립트
-; Inno Setup 6.x 이상 필요: https://jrsoftware.org/isdl.php
+; K-Trader Inno Setup Installer
+; Requires Inno Setup 6.x: https://jrsoftware.org/isdl.php
 
 [Setup]
 AppName=K-Trader
@@ -8,40 +8,39 @@ AppPublisher=K-Trader
 DefaultDirName={autopf}\K-Trader
 DefaultGroupName=K-Trader
 OutputBaseFilename=K-Trader_Setup_v7.5
-SetupIconFile=assets\icon.ico
+SetupIconFile=assets\K-Trader.ico
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
 PrivilegesRequired=lowest
+UninstallDisplayIcon={app}\K-Trader.exe
 
 [Languages]
 Name: "korean"; MessagesFile: "compiler:Languages\Korean.isl"
 
 [Files]
-; 메인 프로그램 (PyInstaller 출력물 전체)
-Source: "dist\K-Trader\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs
-; 설정 마법사
-Source: "dist\K-Trader Setup Wizard.exe"; DestDir: "{app}"; Flags: ignoreversion
-; 빈 폴더 구조
-Source: "config\*"; DestDir: "{app}\config"; Flags: ignoreversion recursesubdirs createallsubdirs; Excludes: "*.enc,*.json"
-; 가이드 PDF
-Source: "docs\K-Trader_Guide.pdf"; DestDir: "{app}\docs"; Flags: ignoreversion
+; Main program (PyInstaller output)
+Source: "dist\K-Trader\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+; Guide PDF
+Source: "docs\K-Trader_Guide.pdf"; DestDir: "{app}\docs"; Flags: ignoreversion skipifsourcedoesntexist
+; Task Scheduler bat
+Source: "start_trader.bat"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
 
 [Dirs]
 Name: "{app}\config"
 Name: "{app}\data"
 Name: "{app}\logs"
 Name: "{app}\reports"
+Name: "{app}\docs"
 
 [Icons]
-; 시작 메뉴
+; Start menu
 Name: "{group}\K-Trader"; Filename: "{app}\K-Trader.exe"
-Name: "{group}\K-Trader Master (설정 마법사)"; Filename: "{app}\K-Trader Setup Wizard.exe"
-Name: "{group}\사용 가이드"; Filename: "{app}\docs\K-Trader_Guide.pdf"
-Name: "{group}\K-Trader 제거"; Filename: "{uninstallexe}"
-; 바탕화면 바로가기 — K-Trader (실행 파일)만 생성
+Name: "{group}\K-Trader Guide"; Filename: "{app}\docs\K-Trader_Guide.pdf"
+Name: "{group}\Uninstall K-Trader"; Filename: "{uninstallexe}"
+; Desktop shortcut
 Name: "{commondesktop}\K-Trader"; Filename: "{app}\K-Trader.exe"
 
 [Run]
-; 설치 완료 후 설정 마법사 자동 실행 (체크박스 없이 항상 실행)
-Filename: "{app}\K-Trader Setup Wizard.exe"; Flags: nowait
+; Launch K-Trader after install
+Filename: "{app}\K-Trader.exe"; Description: "K-Trader 실행"; Flags: nowait postinstall skipifsilent
