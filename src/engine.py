@@ -1354,14 +1354,14 @@ class TradingEngine(QMainWindow):
                 realized = calc_sell_cost(p['buy_price'], exec_price, exec_qty, self.is_mock)
                 self.today_realized_profit += realized
 
-                # [Fix] 매도 체결 시 예수금 복구
-                # 매수 시에는 (체결가*수량)만큼 예수금을 차감했기 때문에,
-                # 매도 시에는 원금(buy_price*qty) + 순손익(realized)을 더해주면
-                # 수수료/세금까지 반영된 현금 흐름이 됩니다.
+                # [Fix] 매도 체결 시 예수금 + 주문가능금액 복구
+                # 매수 시: orderable_amount/deposit 차감
+                # 매도 시: 원금(buy_price*qty) + 순손익(realized) 복구
                 try:
-                    self.deposit += (p['buy_price'] * exec_qty) + realized
-                    if self.deposit < 0:
-                        self.deposit = 0
+                    recovered = (p['buy_price'] * exec_qty) + realized
+                    self.deposit = max(0, self.deposit + recovered)
+                    self.orderable_amount = max(0, self.orderable_amount + recovered)
+                    self.deposit_total = max(0, self.deposit_total + recovered)
                 except Exception:
                     pass
 
