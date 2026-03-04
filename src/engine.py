@@ -261,12 +261,22 @@ class TradingEngine(QMainWindow):
         try:
             with open(path, "r", encoding="utf-8") as f:
                 data = json.load(f)
-                saved_bl = data.get("blacklist", [])
-                if saved_bl:
-                    self.blacklist = set(saved_bl)
-                    saved_names = data.get("blacklist_names", {})
-                    self._bl_cache = {c: saved_names.get(c, c) for c in saved_bl}
-                    logger.info(f"✅ [상태] 블랙리스트 {len(saved_bl)}종목 복원")
+
+                # [Fix] 블랙리스트는 당일 데이터만 복원 — 날짜가 바뀌면 초기화
+                saved_date = data.get("date", "")
+                today = datetime.date.today().isoformat()
+                if saved_date == today:
+                    saved_bl = data.get("blacklist", [])
+                    if saved_bl:
+                        self.blacklist = set(saved_bl)
+                        saved_names = data.get("blacklist_names", {})
+                        self._bl_cache = {c: saved_names.get(c, c) for c in saved_bl}
+                        logger.info(f"✅ [상태] 블랙리스트 {len(saved_bl)}종목 복원 (당일)")
+                else:
+                    logger.info(f"🔄 [상태] 날짜 변경 감지 ({saved_date} → {today}) → 블랙리스트 초기화")
+                    self.blacklist = set()
+                    self._bl_cache = {}
+
                 return set(data.get("bot_bought_codes", []))
         except Exception:
             return set()
@@ -278,6 +288,7 @@ class TradingEngine(QMainWindow):
             codes = [c for c, d in list(self.portfolio.items()) if not d.get('is_manual', False)]  # [Fix #4]
             with open(path, "w", encoding="utf-8") as f:
                 json.dump({
+                    "date": datetime.date.today().isoformat(),
                     "bot_bought_codes": codes,
                     "blacklist": list(self.blacklist),
                     "blacklist_names": dict(getattr(self, '_bl_cache', {})),
