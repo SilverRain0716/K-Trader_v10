@@ -1442,6 +1442,7 @@ class TradingEngine(QMainWindow):
                     self.deposit = max(0, self.deposit + recovered)
                     self.orderable_amount = max(0, self.orderable_amount + recovered)
                     self.deposit_total = max(0, self.deposit_total + recovered)
+                    self.withdrawable_amount = max(0, self.withdrawable_amount + recovered)
                 except Exception:
                     pass
 
