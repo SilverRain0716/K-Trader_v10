@@ -1192,12 +1192,13 @@ class TradingEngine(QMainWindow):
             ts_act = self.config_mgr.get_condition_param(c_name, "ts_activation") or 4.0
             ts_drop = self.config_mgr.get_condition_param(c_name, "ts_drop") or 0.75
 
-            # [v7.6] 분할매도 처리 — TS 독립형 (Option C)
+            # [v7.7] 분할매도 처리 — TS 연계형
             # 로직:
             #   ① 손절(%):         전량 즉시 매도
             #   ② 익절%:           1차 비중(ratio1%)만 매도
-            #   ③ 익절%+offset%:   잔여 전량 매도 (TS 없어도 작동)
-            #   ④ TS 발동:         잔여 전량 매도 (①②③ 미충족 시)
+            #   ③ 잔여 처리 분기:
+            #      - TS ON  → 고점 대비 drop% 하락 시 잔여 전량 매도 (TS가 잔여 포지션 보호)
+            #      - TS OFF → 익절%+offset% 도달 시 잔여 전량 매도 (고정가 폴백)
             ss = data.get('split_sell')
             if ss:
                 try:
@@ -1208,6 +1209,7 @@ class TradingEngine(QMainWindow):
                     t1_done    = ss.get('t1_done', False)
                     t2_done    = ss.get('t2_done', False)
                     pending    = self._pending_sell_qty.get(code, 0)
+                    ts_use     = self.config_mgr.get_condition_param(c_name, "ts_use")
 
                     # ① 손절: 전량
                     if yield_rate <= loss_pct:
@@ -1230,29 +1232,29 @@ class TradingEngine(QMainWindow):
                             self._execute_sell(code, reason, sq)
                         return
 
-                    # ③ 2차: 익절%+offset% 도달 → 잔여 전량 (TS 독립)
-                    if t1_done and not t2_done and yield_rate >= profit_pct + offset:
+                    # ③ 잔여 처리: 1차 완료 후
+                    if t1_done and not t2_done:
                         sellable = data['qty'] - pending
-                        if sellable > 0:
-                            ss['t2_done'] = True
-                            data['sell_ordered'] = True
-                            reason = f"🎯 분할2차 (+{profit_pct + offset:.1f}%)"
-                            data['_last_sell_reason'] = reason
-                            self._execute_sell(code, reason, sellable)
-                        return
+                        if sellable <= 0:
+                            return
 
-                    # ④ TS 발동: t1 완료 여부와 무관하게 잔여 전량 매도
-                    ts_use = self.config_mgr.get_condition_param(c_name, "ts_use")
-                    if ts_use and not t2_done and high_yield >= ts_act:
-                        if (data['high_price'] - curr_p) / data['high_price'] * 100 >= ts_drop:
-                            sellable = data['qty'] - pending
-                            if sellable > 0:
-                                ss['t1_done'] = True   # 1차 미완료 상태에서 TS 발동 시 강제 완료 처리
+                        if ts_use:
+                            # TS ON: ts_act 도달 후 drop% 하락 시 잔여 전량 매도 (그 전까진 대기)
+                            if high_yield >= ts_act:
+                                if (data['high_price'] - curr_p) / data['high_price'] * 100 >= ts_drop:
+                                    ss['t2_done'] = True
+                                    data['sell_ordered'] = True
+                                    reason = f"📉 T.S 발동 (분할잔여)"
+                                    data['_last_sell_reason'] = reason
+                                    self._execute_sell(code, reason, sellable)
+                        else:
+                            # TS OFF: 익절%+offset 고정가 폴백
+                            if yield_rate >= profit_pct + offset:
                                 ss['t2_done'] = True
                                 data['sell_ordered'] = True
-                                data['_last_sell_reason'] = "📉 T.S 발동"
-                                self._execute_sell(code, "📉 T.S 발동", sellable)
-                            return
+                                reason = f"🎯 분할2차 (+{profit_pct + offset:.1f}%)"
+                                data['_last_sell_reason'] = reason
+                                self._execute_sell(code, reason, sellable)
 
                 except Exception as e:
                     logger.error(f"❌ [분할매도] {code} 오류: {e}")
