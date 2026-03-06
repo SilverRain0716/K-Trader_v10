@@ -801,12 +801,11 @@ class TradingUI(QMainWindow):
 
             btn = QPushButton("매도")
             btn.setObjectName("btn_manual_sell")
-            btn.setFixedSize(64, 28)
             btn.clicked.connect(lambda _, c=code: self.ipc_server.send_command("MANUAL_SELL", c))
             container = QWidget()
             container.setStyleSheet("background: transparent;")
             container_layout = QHBoxLayout(container)
-            container_layout.setContentsMargins(3, 0, 3, 0)
+            container_layout.setContentsMargins(4, 3, 4, 3)
             container_layout.setAlignment(Qt.AlignCenter)
             container_layout.addWidget(btn)
             self.table.setCellWidget(row, 9, container)
