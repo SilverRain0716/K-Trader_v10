@@ -820,7 +820,7 @@ class TradingUI(QMainWindow):
             "padding: 2px 8px; min-width: 130px;"
         )
         self.btn_change_account = QPushButton("🔄 계좌변경")
-        self.btn_change_account.setFixedWidth(90)
+        self.btn_change_account.setMinimumWidth(100)
         self.btn_change_account.setEnabled(False)  # 엔진 연결 전까지 비활성
         self.btn_change_account.clicked.connect(self._change_account)
 
@@ -844,7 +844,7 @@ class TradingUI(QMainWindow):
         status_bar.addWidget(self.pw_input)
 
         self.btn_discord_diag = QPushButton("🔔 알림 점검")
-        self.btn_discord_diag.setFixedWidth(110)
+        self.btn_discord_diag.setMinimumWidth(110)
         self.btn_discord_diag.clicked.connect(self._diagnose_discord)
         status_bar.addWidget(self.btn_discord_diag)
 
@@ -1104,7 +1104,7 @@ class TradingUI(QMainWindow):
         self.apply_status = QLabel("")
         self.apply_status.setStyleSheet(f"color: {COLORS['warning_orange']}; font-weight: bold;")
         self.btn_apply = QPushButton("✅ 적용하기")
-        self.btn_apply.setFixedWidth(120)
+        self.btn_apply.setMinimumWidth(120)
         self.btn_apply.clicked.connect(self._apply_settings)
         apply_bar.addWidget(self.apply_status, stretch=1)
         apply_bar.addWidget(self.btn_apply)
@@ -1138,7 +1138,7 @@ class TradingUI(QMainWindow):
         self.cond_count_label = QLabel("편입 0건 | 매수 0건 | 스킵 0건")
         self.cond_count_label.setStyleSheet("font-weight: bold; font-size: 12px;")
         cond_clear_btn = QPushButton("🗑 초기화")
-        cond_clear_btn.setFixedWidth(80)
+        cond_clear_btn.setMinimumWidth(95)
         cond_clear_btn.clicked.connect(self._clear_condition_log)
         cond_header.addWidget(self.cond_count_label)
         cond_header.addStretch()
@@ -1168,7 +1168,7 @@ class TradingUI(QMainWindow):
         self.bl_count_label = QLabel("0종목")
         self.bl_count_label.setStyleSheet("font-weight: bold;")
         bl_clear_btn = QPushButton("🗑 초기화")
-        bl_clear_btn.setFixedWidth(80)
+        bl_clear_btn.setMinimumWidth(95)
         bl_clear_btn.clicked.connect(self._clear_blacklist)
         bl_header.addWidget(self.bl_toggle_cb)
         bl_header.addWidget(self.bl_count_label)
@@ -1183,10 +1183,10 @@ class TradingUI(QMainWindow):
         self.bl_lookup_label = QLabel("")
         self.bl_code_input.textChanged.connect(self._on_bl_code_changed)
         bl_add_btn = QPushButton("➕ 추가")
-        bl_add_btn.setFixedWidth(70)
+        bl_add_btn.setMinimumWidth(80)
         bl_add_btn.clicked.connect(self._add_blacklist)
         bl_rm_btn = QPushButton("➖ 제거")
-        bl_rm_btn.setFixedWidth(70)
+        bl_rm_btn.setMinimumWidth(80)
         bl_rm_btn.clicked.connect(self._remove_blacklist)
         bl_add.addWidget(QLabel("종목코드:"))
         bl_add.addWidget(self.bl_code_input)
