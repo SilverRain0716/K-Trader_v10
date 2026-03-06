@@ -801,6 +801,7 @@ class TradingUI(QMainWindow):
 
             btn = QPushButton("매도")
             btn.setObjectName("btn_manual_sell")
+            btn.setMinimumWidth(60)
             btn.clicked.connect(lambda _, c=code: self.ipc_server.send_command("MANUAL_SELL", c))
             self.table.setCellWidget(row, 9, btn)
 
@@ -1121,7 +1122,7 @@ class TradingUI(QMainWindow):
         header.setSectionResizeMode(0, QHeaderView.Fixed)
         self.table.setColumnWidth(0, 78)
         header.setSectionResizeMode(9, QHeaderView.Fixed)
-        self.table.setColumnWidth(9, 58)
+        self.table.setColumnWidth(9, 72)
         self.table.setAlternatingRowColors(True)
         self.table.verticalHeader().setVisible(False)
         trade_layout.addWidget(self.table, stretch=1)
