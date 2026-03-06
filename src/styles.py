@@ -261,8 +261,6 @@ QPushButton#btn_manual_sell {{
     border-radius: 5px;
     padding: 3px 6px;
     font-size: 12px;
-    min-width: 52px;
-    max-width: 80px;
 }}
 QPushButton#btn_manual_sell:hover {{
     background-color: rgba(255,107,107,0.2);
