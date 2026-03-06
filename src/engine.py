@@ -487,6 +487,14 @@ class TradingEngine(QMainWindow):
                 self._shutdown_report_sent_date = None  # 마감 리포트 플래그 리셋
                 self._cond_reregistered_date = None     # 조건식 재등록 플래그 리셋
                 self._market_open_notified_date = None  # 장 시작 알림 플래그 리셋
+
+                # ── 블랙리스트 초기화 (당일 매매 종목은 다음날 해제) ──────────
+                if self.blacklist:
+                    cleared = len(self.blacklist)
+                    self.blacklist.clear()
+                    self._bl_cache = {}
+                    self._save_bot_state()
+                    logger.info(f"🔄 [자정 리셋] 블랙리스트 {cleared}종목 초기화 완료")
         except Exception as e:
             logger.error(f"❌ [자정 리셋] 오류: {e}")
 
