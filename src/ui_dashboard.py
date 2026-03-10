@@ -259,12 +259,9 @@ class _IndexChartWidget(QWidget):
             return
 
         # 전체 가격 범위 계산 (두 지수를 각각 정규화)
-        all_hist = [("kospi", self._kospi_hist, COLORS['profit_red']),
-                    ("kosdaq", self._kosdaq_hist, COLORS['accent_blue'])]
+        # [Fix v8.1] dead code 제거 + 각 지수별 X축 개별 스케일링
 
         # 등락율 기준으로 Y축 통합
-        all_rates = ([r for _, r in [(x[1], x[2]) for h in [self._kospi_hist, self._kosdaq_hist] for x in h]]
-                     if False else [])
         all_rates = [pt3 for hist in [self._kospi_hist, self._kosdaq_hist] for (_, _, pt3) in hist]
         if not all_rates:
             p.end()
@@ -298,10 +295,9 @@ class _IndexChartWidget(QWidget):
             p.drawText(0, ly - 8, pl - 4, 16, Qt.AlignRight | Qt.AlignVCenter, f"{val:+.1f}%")
 
         # 라인 그리기 (등락율 기준)
+        # [Fix v8.1] 각 지수는 자체 데이터 포인트 수 기준으로 X축 스케일링
         colors_map = {"kospi": COLORS['profit_red'], "kosdaq": COLORS['accent_blue']}
         data_map   = {"kospi": self._kospi_hist, "kosdaq": self._kosdaq_hist}
-
-        total_pts = max(len(self._kospi_hist), len(self._kosdaq_hist), 1)
 
         for key, color in colors_map.items():
             hist = data_map[key]
@@ -313,20 +309,21 @@ class _IndexChartWidget(QWidget):
             p.setPen(pen)
             pts = []
             for i, (_, _, rate) in enumerate(hist):
-                x = pl + int(cw * i / (total_pts - 1)) if total_pts > 1 else pl
+                x = pl + int(cw * i / (n - 1))
                 y = pt + int(ch * (y_max - rate) / y_range)
                 pts.append((x, y))
             for i in range(1, len(pts)):
                 p.drawLine(pts[i-1][0], pts[i-1][1], pts[i][0], pts[i][1])
 
-        # X축 레이블 (최대 6개)
+        # X축 레이블 (최대 6개) — KOSPI 기준 (더 긴 쪽 사용)
         all_ts = [ts for ts, _, _ in self._kospi_hist] or [ts for ts, _, _ in self._kosdaq_hist]
         if all_ts:
-            step = max(1, len(all_ts) // 6)
+            n_ts = len(all_ts)
+            step = max(1, n_ts // 6)
             p.setPen(QColor(COLORS['text_secondary']))
             font.setPointSize(8); p.setFont(font)
-            for i in range(0, len(all_ts), step):
-                x = pl + int(cw * i / (total_pts - 1)) if total_pts > 1 else pl
+            for i in range(0, n_ts, step):
+                x = pl + int(cw * i / (n_ts - 1)) if n_ts > 1 else pl
                 p.drawText(x - 18, h - pb + 4, 36, pb - 4, Qt.AlignCenter, all_ts[i])
 
         p.end()
@@ -1068,22 +1065,23 @@ class TradingUI(QMainWindow):
 
                 self.table.setItem(row, col, item)
 
-            # [Fix] 매도 버튼을 컨테이너 위젯에 넣어 셀 중앙 정렬 + 셀 밖 삐져나옴 방지
+            # [Fix v8.1] 매도 버튼 — 셀 안에 확실히 수납되도록 고정 크기 + 마진
             btn = QPushButton("매도")
             btn.setObjectName("btn_manual_sell")
+            btn.setFixedSize(52, 24)  # 버튼 크기 고정 (컬럼 72px - 마진 여유)
             btn.setStyleSheet(
                 "QPushButton { background-color: rgba(255,107,107,0.15); "
                 "color: #ff6b6b; border: 1px solid rgba(255,107,107,0.4); "
-                "border-radius: 3px; padding: 0px 3px; font-size: 11px; font-weight: 600; }"
+                "border-radius: 3px; padding: 0px; font-size: 11px; font-weight: 600; }"
                 "QPushButton:hover { background-color: rgba(255,107,107,0.3); }"
             )
-            btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
             btn.clicked.connect(lambda _, c=code: self.ipc_server.send_command("MANUAL_SELL", c))
             container = QWidget()
             container.setStyleSheet("background: transparent;")
             lay = QHBoxLayout(container)
-            lay.setContentsMargins(3, 3, 3, 3)
+            lay.setContentsMargins(2, 2, 2, 2)
             lay.setSpacing(0)
+            lay.setAlignment(Qt.AlignCenter)
             lay.addWidget(btn)
             self.table.setCellWidget(row, 9, container)
 
@@ -1478,7 +1476,8 @@ class TradingUI(QMainWindow):
         header.setSectionResizeMode(0, QHeaderView.Fixed)
         self.table.setColumnWidth(0, 78)
         header.setSectionResizeMode(9, QHeaderView.Fixed)
-        self.table.setColumnWidth(9, 58)
+        self.table.setColumnWidth(9, 72)  # [Fix v8.1] 58→72: 매도 버튼이 셀 밖으로 안 넘치도록
+        self.table.verticalHeader().setDefaultSectionSize(32)  # [Fix v8.1] 행 높이 고정
         self.table.setAlternatingRowColors(True)
         self.table.verticalHeader().setVisible(False)
         self.table.setContextMenuPolicy(Qt.CustomContextMenu)
