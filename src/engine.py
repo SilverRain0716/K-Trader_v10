@@ -1290,7 +1290,7 @@ class TradingEngine(QMainWindow):
             self.portfolio[code]['last_price_ts'] = time.time()
             data = self.portfolio[code]
 
-            if data['buy_price'] == 0 or data['qty'] <= 0 or data['status'] != 'HOLDING' or data.get('sell_ordered') or (data.get('is_manual') and not self.config_mgr.get("manual_manage_all", False)):
+            if data['buy_price'] == 0 or data['qty'] <= 0 or data['status'] != 'HOLDING' or data.get('sell_ordered'):
                 # [v7.5] 분할매수 확인 (HOLDING 상태 + buy_price 확정 후)
                 try:
                     if data.get('split_buy') and data['buy_price'] > 0 and data['status'] == 'HOLDING':
@@ -1298,6 +1298,10 @@ class TradingEngine(QMainWindow):
                 except Exception as e:
                     logger.error(f"❌ [분할매수] {code} 오류: {e}")
                 return
+
+            # [Fix] is_manual 종목: 손절/TS는 항상 작동, 익절은 manual_manage_all 설정에 따라
+            manage_manual = self.config_mgr.get("manual_manage_all", False)
+            is_manual_only = data.get('is_manual') and not manage_manual
             if curr_p > data['high_price']:
                 data['high_price'] = curr_p
 
@@ -1343,8 +1347,8 @@ class TradingEngine(QMainWindow):
                             self._execute_sell(code, "🛑 손절", sellable)
                         return
 
-                    # ② 1차: 익절% 도달 → ratio1% 매도
-                    if not t1_done and yield_rate >= profit_pct:
+                    # ② 1차: 익절% 도달 → ratio1% 매도 (is_manual 종목은 manual_manage_all 켜야 작동)
+                    if not t1_done and yield_rate >= profit_pct and not is_manual_only:
                         initial_qty = ss.get('initial_qty') or data['qty']
                         sq = max(1, int(initial_qty * ratio1 / 100))
                         sq = min(sq, data['qty'] - pending)
@@ -1375,8 +1379,8 @@ class TradingEngine(QMainWindow):
                                     data['_last_sell_reason'] = reason
                                     self._execute_sell(code, reason, sellable)
                         else:
-                            # TS OFF: 익절%+offset 고정가 폴백
-                            if yield_rate >= profit_pct + offset:
+                            # TS OFF: 익절%+offset 고정가 폴백 (is_manual 종목은 manual_manage_all 켜야 작동)
+                            if yield_rate >= profit_pct + offset and not is_manual_only:
                                 ss['t2_done'] = True
                                 data['sell_ordered'] = True
                                 reason = f"🎯 분할2차 (+{profit_pct + offset:.1f}%)"
@@ -1394,7 +1398,7 @@ class TradingEngine(QMainWindow):
             if ts_use_normal and high_yield >= ts_act:
                 if (data['high_price'] - curr_p) / data['high_price'] * 100 >= ts_drop:
                     reason = "📉 T.S 발동"
-            elif yield_rate >= (self.config_mgr.get_condition_param(c_name, "profit") or 2.3):
+            elif yield_rate >= (self.config_mgr.get_condition_param(c_name, "profit") or 2.3) and not is_manual_only:
                 reason = "🎯 익절"
             elif yield_rate <= (self.config_mgr.get_condition_param(c_name, "loss") or -1.7):
                 reason = "🛑 손절"
