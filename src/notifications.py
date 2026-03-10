@@ -46,7 +46,7 @@ class Notifier:
 
         # requests 세션 재사용(연결 안정성/성능)
         self._session = requests.Session()
-        self._session.headers.update({"User-Agent": "KTraderMaster/7.4"})
+        self._session.headers.update({"User-Agent": "KTraderMaster/8.0"})
 
         self.email_sender = secrets.get("email_sender", "")
         self.email_password = secrets.get("email_password", "")

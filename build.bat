@@ -2,7 +2,7 @@
 setlocal EnableExtensions EnableDelayedExpansion
 chcp 65001 >nul
 echo.
-echo  [K-Trader v7.5 - EXE Build Tool]
+echo  [K-Trader v8.0 - EXE Build Tool]
 echo.
 
 :: ── 0. Python 32비트 확인 (py launcher 우선 사용) ──

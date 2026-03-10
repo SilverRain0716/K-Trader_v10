@@ -3,11 +3,11 @@
 
 [Setup]
 AppName=K-Trader
-AppVersion=7.5
+AppVersion=8.0
 AppPublisher=K-Trader
 DefaultDirName={autopf}\K-Trader
 DefaultGroupName=K-Trader
-OutputBaseFilename=K-Trader_Setup_v7.5
+OutputBaseFilename=K-Trader_Setup_v8.0
 SetupIconFile=assets\K-Trader.ico
 Compression=lzma2
 SolidCompression=yes

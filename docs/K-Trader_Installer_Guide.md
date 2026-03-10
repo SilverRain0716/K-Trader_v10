@@ -1,6 +1,6 @@
 # K-Trader 인스톨러 제작 가이드
 
-> Windows PC에서 `K-Trader_Setup_v7.5.exe` 인스톨러를 만드는 전체 과정입니다.
+> Windows PC에서 `K-Trader_Setup_v8.0.exe` 인스톨러를 만드는 전체 과정입니다.
 > 총 소요시간: 약 30~60분 (대부분 다운로드/설치 대기)
 
 ---
@@ -18,7 +18,7 @@
   ↓
 [Step 3] Inno Setup 설치
   ↓
-[Step 4] installer.iss 컴파일 → K-Trader_Setup_v7.5.exe 완성
+[Step 4] installer.iss 컴파일 → K-Trader_Setup_v8.0.exe 완성
 ```
 
 ---
@@ -280,8 +280,8 @@ C:\Program Files (x86)\Inno Setup 6\Languages\Korean.isl
 ```ini
 [Setup]
 AppName=K-Trader Master
-AppVersion=7.5
-OutputBaseFilename=K-Trader_Setup_v7.5      ← 생성될 인스톨러 파일명
+AppVersion=8.0
+OutputBaseFilename=K-Trader_Setup_v8.0      ← 생성될 인스톨러 파일명
 SetupIconFile=assets\icon.ico               ← 아이콘 (없으면 이 줄 삭제)
 
 [Files]
@@ -305,7 +305,7 @@ Compiler Output:
   Reading script...
   Compiling...
   Compression: lzma2
-  Output filename: K-Trader_Setup_v7.5.exe
+  Output filename: K-Trader_Setup_v8.0.exe
   ...
   Compile completed.
 ```
@@ -315,7 +315,7 @@ Compiler Output:
 ```
 K-Trader/
   └── Output/
-       └── K-Trader_Setup_v7.5.exe    ← 인스톨러 완성!
+       └── K-Trader_Setup_v8.0.exe    ← 인스톨러 완성!
 ```
 
 파일 크기는 약 **30~80 MB** 정도입니다.
@@ -338,7 +338,7 @@ K-Trader/
 
 가능하면 빌드하지 않은 **다른 Windows PC**에서 테스트합니다:
 
-1. `K-Trader_Setup_v7.5.exe` 를 USB 등으로 복사
+1. `K-Trader_Setup_v8.0.exe` 를 USB 등으로 복사
 2. 더블클릭하여 설치
 3. 설치 과정:
    - 설치 경로 선택 (기본: `C:\Program Files\K-Trader`)
@@ -370,7 +370,7 @@ K-Trader/
 - [ ] K-Trader Setup Wizard.exe 단독 실행 테스트 통과
 - [ ] Inno Setup 6 설치
 - [ ] installer.iss 경로 확인 (아이콘 없으면 줄 삭제)
-- [ ] Build → Compile → Output\K-Trader_Setup_v7.5.exe 생성
+- [ ] Build → Compile → Output\K-Trader_Setup_v8.0.exe 생성
 - [ ] 인스톨러 실행 테스트 → 설치 → 실행 → 제거 확인
 
 ---
