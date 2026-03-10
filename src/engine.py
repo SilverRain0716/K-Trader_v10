@@ -191,7 +191,8 @@ class TradingEngine(QMainWindow):
         # 지수 히스토리 (차트용, 당일 장중 1분봉 축적)
         self._kospi_history = []   # [(timestamp, price, rate), ...]
         self._kosdaq_history = []  # [(timestamp, price, rate), ...]
-        self._index_history_last_min = -1  # 마지막으로 히스토리에 기록한 분(minute)
+        self._kospi_history_last_min  = -1  # KOSPI 마지막 기록 분
+        self._kosdaq_history_last_min = -1  # KOSDAQ 마지막 기록 분
         self._pending_sell_qty = {}
         self._condition_log = []  # 조건식 편입 기록 (UI 표시용, 최근 200건)
         self._bl_cache = {}       # {code: name} 블랙리스트 UI 표시용 캐시
@@ -391,6 +392,16 @@ class TradingEngine(QMainWindow):
                                 logger.error(f"  ❌ 조건식 재등록 실패: {cond['name']} — {e}")
             except Exception as e:
                 logger.error(f"❌ [sync] 조건식 재등록 오류: {e}")
+
+            # [v8.0] 지수 실시간 재등록 (장 시작 시 세션 갱신으로 끊길 수 있어 매일 재등록)
+            try:
+                self.kiwoom.dynamicCall(
+                    "SetRealReg(QString, QString, QString, QString)",
+                    "0099", "0001;1001", "10;11;12", "0"
+                )
+                logger.info("✅ [v8.0] 지수 실시간 재등록 완료 (장 시작 시)")
+            except Exception as e:
+                logger.error(f"❌ [v8.0] 지수 실시간 재등록 실패: {e}")
 
             # ③ 장 시작 시 예수금 즉시 갱신 (독립 try — 항상 실행)
             # [Fix D] 장 시작 시 예수금 즉시 갱신
@@ -1135,7 +1146,9 @@ class TradingEngine(QMainWindow):
 
     def _on_real_data(self, code, real_type, real_data):
         # [v8.0] 지수 실시간 수신 (KOSPI/KOSDAQ) — 종목 처리와 완전히 분리
-        if code in ("0001", "1001") and real_type == "주식지수":
+        if code in ("0001", "1001"):
+            logger.info(f"[지수수신] code={code} real_type='{real_type}'")
+        if code in ("0001", "1001") and "지수" in real_type:
             try:
                 price_raw = self.kiwoom.dynamicCall("GetCommRealData(QString, int)", code, 10)
                 rate_raw  = self.kiwoom.dynamicCall("GetCommRealData(QString, int)", code, 12)
@@ -1149,17 +1162,19 @@ class TradingEngine(QMainWindow):
                     self.kosdaq_price = price
                     self.kosdaq_rate  = rate
 
-                # 1분봉 히스토리 축적 (차트용)
+                # 1분봉 히스토리 축적 (차트용) — KOSPI/KOSDAQ 각각 독립 관리
                 now = datetime.datetime.now()
                 cur_min = now.hour * 60 + now.minute
-                if cur_min != self._index_history_last_min:
-                    self._index_history_last_min = cur_min
-                    ts_str = now.strftime("%H:%M")
-                    if code == "0001":
+                ts_str = now.strftime("%H:%M")
+                if code == "0001":
+                    if cur_min != self._kospi_history_last_min:
+                        self._kospi_history_last_min = cur_min
                         self._kospi_history.append((ts_str, price, rate))
-                        if len(self._kospi_history) > 400:   # 최대 400분치
+                        if len(self._kospi_history) > 400:
                             self._kospi_history = self._kospi_history[-400:]
-                    else:
+                else:
+                    if cur_min != self._kosdaq_history_last_min:
+                        self._kosdaq_history_last_min = cur_min
                         self._kosdaq_history.append((ts_str, price, rate))
                         if len(self._kosdaq_history) > 400:
                             self._kosdaq_history = self._kosdaq_history[-400:]
