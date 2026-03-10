@@ -1350,16 +1350,20 @@ class TradingEngine(QMainWindow):
                         sq = min(sq, data['qty'] - pending)
                         if sq > 0:
                             ss['t1_done'] = True
+                            data['sell_ordered'] = True   # [Fix Bug1] 1차 주문 중 중복 발행 방지
                             reason = f"🎯 분할1차 ({ratio1}% @ +{profit_pct:.1f}%)"
                             data['_last_sell_reason'] = reason
                             self._execute_sell(code, reason, sq)
                         return
 
-                    # ③ 잔여 처리: 1차 완료 후
+                    # ③ 잔여 처리: 1차 체결 완료 후 (sell_ordered는 _on_chejan에서 False로 복구됨)
                     if t1_done and not t2_done:
                         sellable = data['qty'] - pending
                         if sellable <= 0:
                             return
+
+                        # [Fix Bug2] ts_use는 명시적으로 bool 변환 (0/False/None 구분)
+                        ts_use = bool(self.config_mgr.get_condition_param(c_name, "ts_use"))
 
                         if ts_use:
                             # TS ON: ts_act 도달 후 drop% 하락 시 잔여 전량 매도 (그 전까진 대기)
@@ -1385,7 +1389,9 @@ class TradingEngine(QMainWindow):
 
             # 기존 전량매도 로직 (분할매도 비활성 시)
             reason = ""
-            if self.config_mgr.get_condition_param(c_name, "ts_use") and high_yield >= ts_act:
+            # [Fix Bug2] ts_use 명시적 bool 변환 (0/False/None → False, True/1 → True)
+            ts_use_normal = bool(self.config_mgr.get_condition_param(c_name, "ts_use"))
+            if ts_use_normal and high_yield >= ts_act:
                 if (data['high_price'] - curr_p) / data['high_price'] * 100 >= ts_drop:
                     reason = "📉 T.S 발동"
             elif yield_rate >= (self.config_mgr.get_condition_param(c_name, "profit") or 2.3):
@@ -1603,7 +1609,11 @@ class TradingEngine(QMainWindow):
                     self._bot_bought_codes.discard(code)
                     self._save_bot_state()
                 else:
+                    # [Fix Bug1] 분할매도 1차 체결 후 잔여 포지션 감시 재개
+                    # sell_ordered=True가 남아있으면 1293라인 early-return에 막혀
+                    # 2차 TS/분할2차 로직이 영원히 실행되지 않는 버그 수정
                     p['status'] = 'HOLDING'
+                    p['sell_ordered'] = False
 
         if unexec == 0 and order_no in self.unexecuted_orders:
             del self.unexecuted_orders[order_no]
