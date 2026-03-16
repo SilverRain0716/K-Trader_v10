@@ -225,6 +225,129 @@ class IndexChartWindow(QDialog):
         self._chart.update()
 
 
+class ConditionParamDialog(QDialog):
+    """
+    [v9.0] 조건식별 파라미터 오버라이드 편집 다이얼로그.
+    글로벌 값을 기본 표시하고, 변경된 값만 condition_params에 저장.
+    """
+
+    def __init__(self, cond_name: str, config_mgr, parent=None):
+        super().__init__(parent)
+        self.cond_name = cond_name
+        self.config_mgr = config_mgr
+        self.setWindowTitle(f"⚙️ {cond_name} — 조건식별 파라미터")
+        self.setMinimumWidth(480)
+
+        layout = QVBoxLayout(self)
+
+        # 현재 오버라이드 값 로드
+        cp = config_mgr.get("condition_params", {}).get(cond_name, {})
+
+        # ── 매매 파라미터 ──
+        grp1 = QGroupBox("📈 매매 파라미터")
+        g1 = QGridLayout()
+
+        g1.addWidget(QLabel("익절%"), 0, 0)
+        self.profit_spin = QDoubleSpinBox()
+        self.profit_spin.setRange(0.1, 30.0); self.profit_spin.setSingleStep(0.1); self.profit_spin.setSuffix("%")
+        self.profit_spin.setValue(cp.get("profit", config_mgr.get("profit", 2.3)))
+        g1.addWidget(self.profit_spin, 0, 1)
+
+        g1.addWidget(QLabel("손절%"), 0, 2)
+        self.loss_spin = QDoubleSpinBox()
+        self.loss_spin.setRange(-30.0, -0.1); self.loss_spin.setSingleStep(0.1); self.loss_spin.setSuffix("%")
+        self.loss_spin.setValue(cp.get("loss", config_mgr.get("loss", -1.7)))
+        g1.addWidget(self.loss_spin, 0, 3)
+
+        g1.addWidget(QLabel("TS 사용"), 1, 0)
+        self.ts_cb = QCheckBox()
+        self.ts_cb.setChecked(bool(cp.get("ts_use", config_mgr.get("ts_use", False))))
+        g1.addWidget(self.ts_cb, 1, 1)
+
+        g1.addWidget(QLabel("TS 활성%"), 1, 2)
+        self.ts_act_spin = QDoubleSpinBox()
+        self.ts_act_spin.setRange(0.5, 30.0); self.ts_act_spin.setSingleStep(0.5); self.ts_act_spin.setSuffix("%")
+        self.ts_act_spin.setValue(cp.get("ts_activation", config_mgr.get("ts_activation", 4.0)))
+        g1.addWidget(self.ts_act_spin, 1, 3)
+
+        g1.addWidget(QLabel("TS 하락%"), 2, 0)
+        self.ts_drop_spin = QDoubleSpinBox()
+        self.ts_drop_spin.setRange(0.1, 10.0); self.ts_drop_spin.setSingleStep(0.1); self.ts_drop_spin.setSuffix("%")
+        self.ts_drop_spin.setValue(cp.get("ts_drop", config_mgr.get("ts_drop", 0.75)))
+        g1.addWidget(self.ts_drop_spin, 2, 1)
+
+        grp1.setLayout(g1)
+        layout.addWidget(grp1)
+
+        # ── 틱 감시 파라미터 ──
+        grp2 = QGroupBox("👁️ 틱 감시 오버라이드")
+        g2 = QGridLayout()
+
+        g2.addWidget(QLabel("틱감시 ON"), 0, 0)
+        self.tm_cb = QCheckBox()
+        self.tm_cb.setChecked(bool(cp.get("tick_monitor_enabled", config_mgr.get("tick_monitor_enabled", False))))
+        g2.addWidget(self.tm_cb, 0, 1)
+
+        g2.addWidget(QLabel("체결금액"), 0, 2)
+        self.tm_thr = QSpinBox()
+        self.tm_thr.setRange(1_000_000, 500_000_000); self.tm_thr.setSingleStep(5_000_000); self.tm_thr.setSuffix("원")
+        self.tm_thr.setValue(cp.get("tick_monitor_threshold", config_mgr.get("tick_monitor_threshold", 30_000_000)))
+        g2.addWidget(self.tm_thr, 0, 3)
+
+        g2.addWidget(QLabel("횟수"), 1, 0)
+        self.tm_cnt = QSpinBox()
+        self.tm_cnt.setRange(1, 20); self.tm_cnt.setSuffix("회")
+        self.tm_cnt.setValue(cp.get("tick_monitor_count", config_mgr.get("tick_monitor_count", 4)))
+        g2.addWidget(self.tm_cnt, 1, 1)
+
+        g2.addWidget(QLabel("시간창"), 1, 2)
+        self.tm_win = QDoubleSpinBox()
+        self.tm_win.setRange(0.5, 10.0); self.tm_win.setSingleStep(0.5); self.tm_win.setSuffix("초")
+        self.tm_win.setValue(cp.get("tick_monitor_window_sec", config_mgr.get("tick_monitor_window_sec", 2.0)))
+        g2.addWidget(self.tm_win, 1, 3)
+
+        g2.addWidget(QLabel("눌림%"), 2, 0)
+        self.tm_dip = QDoubleSpinBox()
+        self.tm_dip.setRange(-5.0, 0.0); self.tm_dip.setSingleStep(0.1); self.tm_dip.setSuffix("%")
+        self.tm_dip.setValue(cp.get("tick_monitor_dip_pct", config_mgr.get("tick_monitor_dip_pct", -0.5)))
+        g2.addWidget(self.tm_dip, 2, 1)
+
+        grp2.setLayout(g2)
+        layout.addWidget(grp2)
+
+        # 안내 텍스트
+        note = QLabel("💡 변경하지 않은 값은 글로벌 설정을 따릅니다. '오버라이드 초기화'로 전체 복원 가능.")
+        note.setStyleSheet("color: #94a3b8; font-size: 11px; margin-top: 4px;")
+        note.setWordWrap(True)
+        layout.addWidget(note)
+
+        # 버튼
+        btn_layout = QHBoxLayout()
+        btn_ok = QPushButton("✅ 저장")
+        btn_ok.clicked.connect(self.accept)
+        btn_cancel = QPushButton("취소")
+        btn_cancel.clicked.connect(self.reject)
+        btn_layout.addStretch()
+        btn_layout.addWidget(btn_cancel)
+        btn_layout.addWidget(btn_ok)
+        layout.addLayout(btn_layout)
+
+    def get_params(self) -> dict:
+        """다이얼로그에서 입력된 파라미터 dict 반환."""
+        return {
+            "profit": round(self.profit_spin.value(), 2),
+            "loss": round(self.loss_spin.value(), 2),
+            "ts_use": self.ts_cb.isChecked(),
+            "ts_activation": round(self.ts_act_spin.value(), 2),
+            "ts_drop": round(self.ts_drop_spin.value(), 2),
+            "tick_monitor_enabled": self.tm_cb.isChecked(),
+            "tick_monitor_threshold": self.tm_thr.value(),
+            "tick_monitor_count": self.tm_cnt.value(),
+            "tick_monitor_window_sec": round(self.tm_win.value(), 1),
+            "tick_monitor_dip_pct": round(self.tm_dip.value(), 1),
+        }
+
+
 class _IndexChartWidget(QWidget):
     """QPainter 기반 지수 라인차트."""
 
@@ -1075,6 +1198,52 @@ class TradingUI(QMainWindow):
         mode_names = {1: "손절만 자동등록", 2: "전체 자동 + 수동해제", 3: "완전 수동"}
         self._send_log(f"🔄 블랙리스트 모드 변경: {mode_names.get(mode, '?')}")
 
+    # ── [v9.0] 조건식별 파라미터 오버라이드 ──
+    def _on_condition_context_menu(self, pos):
+        """조건식 리스트 우클릭 → 개별 파라미터 편집."""
+        item = self.condition_list.itemAt(pos)
+        if not item:
+            return
+        cond_name = item.text()
+        from PyQt5.QtWidgets import QMenu, QAction
+        menu = QMenu(self)
+        edit_action = QAction(f"⚙️ {cond_name} 파라미터 편집", self)
+        edit_action.triggered.connect(lambda: self._open_condition_param_dialog(cond_name))
+        menu.addAction(edit_action)
+        reset_action = QAction(f"🔄 {cond_name} 오버라이드 초기화", self)
+        reset_action.triggered.connect(lambda: self._reset_condition_params(cond_name))
+        menu.addAction(reset_action)
+        menu.exec_(self.condition_list.viewport().mapToGlobal(pos))
+
+    def _open_condition_param_dialog(self, cond_name: str):
+        """조건식별 파라미터 편집 다이얼로그."""
+        dlg = ConditionParamDialog(cond_name, self.config_mgr, parent=self)
+        if dlg.exec_() == QDialog.Accepted:
+            params = dlg.get_params()
+            cfg = self.config_mgr.config
+            if "condition_params" not in cfg:
+                cfg["condition_params"] = {}
+            cfg["condition_params"][cond_name] = params
+            self.config_mgr.save(cfg)
+            try:
+                self.ipc_server.send_command("APPLY_SETTINGS", json.dumps(cfg, ensure_ascii=False))
+            except Exception:
+                pass
+            self._send_log(f"⚙️ [{cond_name}] 파라미터 오버라이드 저장 완료")
+
+    def _reset_condition_params(self, cond_name: str):
+        """조건식별 오버라이드를 삭제하여 글로벌 값으로 복원."""
+        cfg = self.config_mgr.config
+        cp = cfg.get("condition_params", {})
+        if cond_name in cp:
+            del cp[cond_name]
+            self.config_mgr.save(cfg)
+            try:
+                self.ipc_server.send_command("APPLY_SETTINGS", json.dumps(cfg, ensure_ascii=False))
+            except Exception:
+                pass
+            self._send_log(f"🔄 [{cond_name}] 오버라이드 초기화 → 글로벌 설정 사용")
+
     def _add_blacklist(self):
         code = self.bl_code_input.text().strip()
         if len(code) == 6 and code.isdigit():
@@ -1354,6 +1523,8 @@ class TradingUI(QMainWindow):
         self.condition_list.setMinimumHeight(100)
         self.condition_list.setMaximumHeight(140)
         self.condition_list.itemChanged.connect(self._on_condition_item_changed)
+        self.condition_list.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.condition_list.customContextMenuRequested.connect(self._on_condition_context_menu)
         s1.addWidget(self.condition_list, 0, 1, 3, 1)
 
         # 투자 (우측 row 0) — 전체 너비 사용
@@ -1610,7 +1781,8 @@ class TradingUI(QMainWindow):
         div_tick = QFrame(); div_tick.setObjectName("section_divider"); div_tick.setFrameShape(QFrame.HLine)
         s3.addWidget(div_tick, 5, 0, 1, 6)
 
-        self.tick_monitor_cb = ToggleSwitch("👁️ 틱 감시 (글로벌)")
+        self.tick_monitor_cb = ToggleSwitch("👁️ 틱감시")
+        self.tick_monitor_cb.setMinimumWidth(110)
         self.tick_monitor_cb.setToolTip(
             "ON: 조건식 편입 종목에 대해 대량매수 감지 후 매수 (세력 진입 포착)\n"
             "OFF: 조건식 편입 즉시 매수 (기존 방식)\n"
