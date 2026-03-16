@@ -260,7 +260,7 @@ class ConditionParamDialog(QDialog):
         g1.addWidget(self.loss_spin, 0, 3)
 
         g1.addWidget(QLabel("TS 사용"), 1, 0)
-        self.ts_cb = QCheckBox()
+        self.ts_cb = ToggleSwitch("")
         self.ts_cb.setChecked(bool(cp.get("ts_use", config_mgr.get("ts_use", False))))
         g1.addWidget(self.ts_cb, 1, 1)
 
@@ -284,7 +284,7 @@ class ConditionParamDialog(QDialog):
         g2 = QGridLayout()
 
         g2.addWidget(QLabel("틱감시 ON"), 0, 0)
-        self.tm_cb = QCheckBox()
+        self.tm_cb = ToggleSwitch("")
         self.tm_cb.setChecked(bool(cp.get("tick_monitor_enabled", config_mgr.get("tick_monitor_enabled", False))))
         g2.addWidget(self.tm_cb, 0, 1)
 
