@@ -1106,14 +1106,45 @@ class TradingEngine(QMainWindow):
             try:
                 raw_price = self.kiwoom.dynamicCall(
                     "GetCommData(QString, QString, int, QString)", trcode, rqname, 0, "현재가")
-                raw_rate = self.kiwoom.dynamicCall(
-                    "GetCommData(QString, QString, int, QString)", trcode, rqname, 0, "등락율")
+
+                # [Fix v8.2] 등락율 필드명 — 키움 opt20001은 필드명이 환경마다 다를 수 있음
+                # 가능한 필드명을 순서대로 시도
+                raw_rate = ""
+                for rate_field in ("등락율", "등락률", "전일대비등락률", "전일대비등락율"):
+                    raw_rate = self.kiwoom.dynamicCall(
+                        "GetCommData(QString, QString, int, QString)", trcode, rqname, 0, rate_field).strip()
+                    if raw_rate:
+                        break
+
+                # 전일대비 필드도 가져와서 등락율 직접 계산 폴백
+                raw_diff = self.kiwoom.dynamicCall(
+                    "GetCommData(QString, QString, int, QString)", trcode, rqname, 0, "전일대비")
 
                 price_str = raw_price.strip().replace(',', '').replace('+', '').replace(' ', '')
-                rate_str = raw_rate.strip().replace(',', '').replace(' ', '')
+                rate_str = raw_rate.replace(',', '').replace('+', '').replace(' ', '').strip() if raw_rate else ""
+                diff_str = raw_diff.strip().replace(',', '').replace('+', '').replace(' ', '') if raw_diff else ""
 
                 price = abs(float(price_str)) if price_str else 0
                 rate = float(rate_str) if rate_str else 0.0
+
+                # [Fix v8.2] 등락율이 0이고 전일대비가 있으면 직접 계산
+                if rate == 0.0 and diff_str and price > 0:
+                    try:
+                        diff_val = float(diff_str)
+                        prev_price = price - diff_val
+                        if prev_price > 0:
+                            rate = (diff_val / prev_price) * 100
+                    except (ValueError, ZeroDivisionError):
+                        pass
+
+                # 디버그: 처음 5회는 raw 값 전체 로깅
+                _tr_idx_cnt = getattr(self, '_tr_idx_log_cnt', 0)
+                if _tr_idx_cnt < 5:
+                    self._tr_idx_log_cnt = _tr_idx_cnt + 1
+                    logger.info(
+                        f"[지수TR디버그] {rqname}: 현재가='{raw_price.strip()}' "
+                        f"등락율='{raw_rate}' 전일대비='{raw_diff.strip()}' → price={price}, rate={rate:.2f}"
+                    )
 
                 if price > 0:
                     is_kospi = "KOSPI" in rqname
