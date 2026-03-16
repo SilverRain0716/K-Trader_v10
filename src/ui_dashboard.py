@@ -1051,8 +1051,9 @@ class TradingUI(QMainWindow):
             qty = data['qty']
             is_manual = data.get('is_manual', False)
             pnl = calc_sell_cost(buy_p, curr_p, qty, self.is_mock)
-            invested = buy_p * qty
-            yield_rate = (pnl / invested * 100) if invested > 0 else 0
+            # [Fix v8.2] 수익률: 엔진과 동일한 단순 수익률 사용 (수수료 미포함)
+            # 엔진의 익절/손절/TS 판정이 단순 수익률 기준이므로 UI도 동일하게 표시
+            yield_rate = ((curr_p - buy_p) / buy_p * 100) if buy_p > 0 else 0
             status = "👀 기존보유" if is_manual else ("⏳ 주문중" if data.get('sell_ordered') else "🔍 감시중")
 
             # [v7.5] 분할매수/매도 진행 상태
