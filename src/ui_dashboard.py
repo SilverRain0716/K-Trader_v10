@@ -931,12 +931,26 @@ class TradingUI(QMainWindow):
         kd_p = state.get('kosdaq_price', 0)
         kd_r = state.get('kosdaq_rate', 0.0)
 
-        self.kospi_label.setText(_fmt("KOSPI", kp, kr))
+        # [Fix v8.2] 지수 필터 상태 표시 — 임계값 이하일 때 경고
+        idx_filter_on = self.config_mgr.get("index_filter_enabled", False)
+        threshold = self.config_mgr.get("index_filter_threshold", -2.0)
+
+        kospi_blocked = idx_filter_on and kp > 0 and kr < threshold
+        kosdaq_blocked = idx_filter_on and kd_p > 0 and kd_r < threshold
+
+        kospi_txt = _fmt("KOSPI", kp, kr)
+        kosdaq_txt = _fmt("KOSDAQ", kd_p, kd_r)
+        if kospi_blocked:
+            kospi_txt += " ⛔"
+        if kosdaq_blocked:
+            kosdaq_txt += " ⛔"
+
+        self.kospi_label.setText(kospi_txt)
         self.kospi_label.setStyleSheet(
             f"color: {_color(kr)}; padding: 2px 6px; "
             "font-family: 'Consolas', monospace; font-size: 12px; font-weight: bold;"
         )
-        self.kosdaq_label.setText(_fmt("KOSDAQ", kd_p, kd_r))
+        self.kosdaq_label.setText(kosdaq_txt)
         self.kosdaq_label.setStyleSheet(
             f"color: {_color(kd_r)}; padding: 2px 6px; "
             "font-family: 'Consolas', monospace; font-size: 12px; font-weight: bold;"
@@ -971,12 +985,24 @@ class TradingUI(QMainWindow):
     # ── [v7.5] 블랙리스트 관리 ──
     def _on_blacklist_toggle(self, state):
         cfg = self.config_mgr.config
-        cfg["blacklist_enabled"] = (state == Qt.Checked)
+        bl_enabled = (state == Qt.Checked)
+        cfg["blacklist_enabled"] = bl_enabled
         self.config_mgr.save(cfg)
         try:
             self.ipc_server.send_command("APPLY_SETTINGS", json.dumps(cfg, ensure_ascii=False))
         except Exception:
             pass
+
+        # [Fix v8.2] 토글 변경 시 상태 라벨 즉시 갱신
+        bl_count = self.bl_table.rowCount()
+        if bl_enabled:
+            self.bl_count_label.setText(f"🔒 블랙리스트 활성화 | 합: {bl_count}종목")
+            self.bl_count_label.setStyleSheet(f"font-weight: bold; color: {COLORS['accent_green']};")
+            self._send_log("🔒 블랙리스트 활성화 — 리스트의 종목은 매수에서 제외됩니다")
+        else:
+            self.bl_count_label.setText(f"🔓 블랙리스트 비활성 | 합: {bl_count}종목 (필터링 안 됨)")
+            self.bl_count_label.setStyleSheet(f"font-weight: bold; color: {COLORS['warning_orange']};")
+            self._send_log("🔓 블랙리스트 비활성화 — 리스트의 종목도 매수될 수 있습니다")
 
     def _add_blacklist(self):
         code = self.bl_code_input.text().strip()
@@ -1001,7 +1027,16 @@ class TradingUI(QMainWindow):
 
     def _update_bl_table(self, bl_dict):
         self.bl_table.setRowCount(len(bl_dict))
-        self.bl_count_label.setText(f"{len(bl_dict)}종목")
+
+        # [Fix v8.2] 블랙리스트 활성/비활성 상태를 명확히 표시
+        bl_enabled = self.bl_toggle_cb.isChecked()
+        if bl_enabled:
+            self.bl_count_label.setText(f"🔒 블랙리스트 활성화 | 합: {len(bl_dict)}종목")
+            self.bl_count_label.setStyleSheet(f"font-weight: bold; color: {COLORS['accent_green']};")
+        else:
+            self.bl_count_label.setText(f"🔓 블랙리스트 비활성 | 합: {len(bl_dict)}종목 (필터링 안 됨)")
+            self.bl_count_label.setStyleSheet(f"font-weight: bold; color: {COLORS['warning_orange']};")
+
         for row, (code, name) in enumerate(sorted(bl_dict.items())):
             for col, txt in enumerate([code, name or code, "당일 매수"]):
                 self.bl_table.setItem(row, col, QTableWidgetItem(txt))
