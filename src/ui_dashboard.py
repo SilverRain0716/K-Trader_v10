@@ -1108,8 +1108,8 @@ class TradingUI(QMainWindow):
             btn.setStyleSheet(
                 "QPushButton { background-color: rgba(255,107,107,0.15); "
                 "color: #ff6b6b; border: 1px solid rgba(255,107,107,0.4); "
-                "border-radius: 3px; padding: 1px 4px; font-size: 11px; font-weight: 600; "
-                "margin: 2px; }"
+                "border-radius: 3px; padding: 1px 6px; font-size: 11px; font-weight: 600; "
+                "margin: 3px 6px; }"
                 "QPushButton:hover { background-color: rgba(255,107,107,0.3); }"
             )
             btn.clicked.connect(lambda _, c=code: self.ipc_server.send_command("MANUAL_SELL", c))
@@ -1506,7 +1506,7 @@ class TradingUI(QMainWindow):
         header.setSectionResizeMode(0, QHeaderView.Fixed)
         self.table.setColumnWidth(0, 78)
         header.setSectionResizeMode(9, QHeaderView.Fixed)
-        self.table.setColumnWidth(9, 76)  # [Fix v8.1] 매도 버튼 수납 (76px)
+        self.table.setColumnWidth(9, 88)  # [Fix v8.2] 매도 버튼 완전 수납
         self.table.verticalHeader().setDefaultSectionSize(34)  # [Fix v8.1] 행 높이 34px
         self.table.setAlternatingRowColors(True)
         self.table.verticalHeader().setVisible(False)
