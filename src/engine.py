@@ -1531,8 +1531,11 @@ class TradingEngine(QMainWindow):
 
                     # ② 1차: 익절% 도달 → ratio1% 매도 (is_manual 종목은 manual_manage_all 켜야 작동)
                     if not t1_done and yield_rate >= profit_pct and not is_manual_only:
-                        initial_qty = ss.get('initial_qty') or data['qty']
-                        sq = max(1, int(initial_qty * ratio1 / 100))
+                        # [Fix v8.2] 분할매수 미완료 시 actual qty 기준으로 매도 수량 계산
+                        # initial_qty는 분할매수 '계획' 총수량이므로, 2차 매수 전이면
+                        # data['qty']가 initial_qty보다 작을 수 있음 → 실제 보유량 기준 사용
+                        base_qty = min(ss.get('initial_qty') or data['qty'], data['qty'])
+                        sq = max(1, int(base_qty * ratio1 / 100))
                         sq = min(sq, data['qty'] - pending)
                         if sq > 0:
                             ss['t1_done'] = True
@@ -1707,9 +1710,13 @@ class TradingEngine(QMainWindow):
 
             if "+매수" in buy_sell and exec_qty > 0:
                 p = self.portfolio[code]
-                p['buy_price'] = ((p['buy_price'] * p['qty']) + (exec_price * exec_qty)) // (p['qty'] + exec_qty)
-                p['qty'] += exec_qty
-                p['high_price'] = max(p['high_price'], p['buy_price'])
+                # [Fix v8.2] 평단가 계산: // 정수나눗셈의 절삭 오차 누적 방지 → round 사용
+                total_cost = (p['buy_price'] * p['qty']) + (exec_price * exec_qty)
+                new_qty = p['qty'] + exec_qty
+                p['buy_price'] = round(total_cost / new_qty) if new_qty > 0 else exec_price
+                p['qty'] = new_qty
+                # [Fix v8.2] high_price: 체결가도 고려 (체결가가 현재 고점보다 높을 수 있음)
+                p['high_price'] = max(p['high_price'], p['buy_price'], exec_price)
                 cost = exec_price * exec_qty
                 self.locked_deposit = max(0, self.locked_deposit - cost)
                 # 현금(주문가능/총예수금)을 체결 즉시 반영해 UI/알림 불일치를 막습니다.
