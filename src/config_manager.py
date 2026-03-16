@@ -212,6 +212,11 @@ DEFAULT_CONFIG = {
     },
     # [v7.5] 블랙리스트
     "blacklist_enabled": True,
+    # [v9.0] 블랙리스트 모드
+    #   1 = 손절 기준: 손절 종목만 자동 등록, 익절은 수동 추가 가능
+    #   2 = 자동 + 수동해제: 당일 매매 종목 전체 자동 등록, 개별 해제 가능, 해제 후 재등록 안 함
+    #   3 = 완전 수동: 자동 등록 없음, 수동으로만 추가
+    "blacklist_mode": 1,
     # [v7.5] 분할 매수 (확인 분할)
     "split_buy_enabled": False,
     "split_buy_rounds": 2,
@@ -230,6 +235,18 @@ DEFAULT_CONFIG = {
     "index_filter_enabled": False,   # 지수 필터 활성화 여부
     "index_filter_threshold": -2.0,  # 매수 허용 최소 등락율 (%) — 이 값 미만이면 매수 차단
     "index_filter_target": "both",   # "kospi" / "kosdaq" / "both"(AND) / "either"(OR)
+
+    # [v9.0] 틱 감시 (TickMonitor) — 세력 진입 감지 매수
+    "tick_monitor_enabled": False,           # 글로벌 틱 감시 활성화 (조건식별 오버라이드 가능)
+    "tick_monitor_threshold": 30_000_000,    # 대량 체결 판정 금액 (원)
+    "tick_monitor_count": 4,                 # 시간 창 내 필요 대량 매수 횟수
+    "tick_monitor_window_sec": 2.0,          # 슬라이딩 윈도우 시간 창 (초)
+    "tick_monitor_max_watch": 10,            # 틱 감시 대기 종목 최대 수
+    "tick_monitor_buy_ratio": 50,            # 1차 매수 비중 (%, 나머지가 2차)
+    "tick_monitor_dip_pct": -0.5,            # 눌림 판정 하락률 (1차 매수가 대비, %)
+    "tick_monitor_dip_rebuy_count": 1,       # 눌림 중 대량 매수 재출현 필요 횟수
+    "tick_monitor_dip_timeout_sec": 60,      # 눌림 대기 타임아웃 (초)
+    "tick_monitor_expire_sec": 120,          # 조건식 편입 후 신호 미발생 시 감시 해제 (초)
 }
 
 

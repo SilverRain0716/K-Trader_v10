@@ -790,6 +790,11 @@ class TradingUI(QMainWindow):
 
         self._update_portfolio_table(state.get("portfolio", {}))
         self._update_condition_table(state.get("condition_log", []))
+        # [v9.0] 틱 감시 탭 업데이트
+        try:
+            self._update_tick_monitor_tab(state)
+        except Exception:
+            pass
         try:
             bl = state.get("blacklist", {})
             if isinstance(bl, dict):
@@ -910,6 +915,60 @@ class TradingUI(QMainWindow):
         self._cond_log_count = 0
         self.cond_count_label.setText("편입 0건 | 매수 0건 | 스킵 0건")
 
+    # ── [v9.0] 틱 감시 모니터 UI 업데이트 ─────────────────
+    def _update_tick_monitor_tab(self, state: dict):
+        """틱 감시 테이블 + 로그 업데이트."""
+        watched = state.get("tick_monitor_watched", {})
+        tick_log = state.get("tick_monitor_log", [])
+
+        # 테이블 갱신
+        self.tick_table.setRowCount(len(watched))
+        for row, (code, info) in enumerate(watched.items()):
+            phase = info.get("phase", "")
+            hit = info.get("hit_count", 0)
+            req = info.get("required_count", 4)
+            threshold = info.get("threshold", 30_000_000)
+            phase_text = {"WATCHING": "👁️ 감시중", "DIP_WAIT": "📉 눌림대기", "DONE": "✅ 완료"}.get(phase, phase)
+
+            # 신호 발생(4/4) 시 색상 강조
+            if hit >= req:
+                count_text = f"🚨 {hit}/{req}"
+                count_color = COLORS.get('profit_green', '#34d399')
+            else:
+                count_text = f"{hit}/{req}"
+                count_color = COLORS.get('text_primary', '#e2e8f0')
+
+            items_data = [
+                (info.get("name", ""), None),
+                (code, None),
+                (info.get("cond_name", ""), None),
+                (phase_text, COLORS.get('warning_orange', '#ff9800') if phase == "DIP_WAIT" else None),
+                (count_text, count_color),
+                (f"{threshold/10000:.0f}만원/{info.get('window_sec', 2)}초", None),
+            ]
+            for col, (text, color) in enumerate(items_data):
+                item = QTableWidgetItem(str(text))
+                item.setTextAlignment(Qt.AlignCenter)
+                if color:
+                    item.setForeground(QBrush(QColor(color)))
+                    item.setFont(QFont("Malgun Gothic", 10, QFont.Bold))
+                self.tick_table.setItem(row, col, item)
+
+        active_count = len([c for c, s in watched.items() if s.get("phase") != "DONE"])
+        self.tick_count_label.setText(f"감시 {active_count}종목 / 최대 {self.config_mgr.get('tick_monitor_max_watch', 10)}개")
+
+        # 로그 갱신 (새 항목만 추가)
+        prev_log_count = getattr(self, '_tick_log_count', 0)
+        if len(tick_log) != prev_log_count:
+            self._tick_log_count = len(tick_log)
+            # 최신 50건만 표시
+            display_log = tick_log[-50:]
+            lines = [f"[{entry.get('time', '')}] {entry.get('msg', '')}" for entry in display_log]
+            self.tick_log_window.setPlainText("\n".join(lines))
+            # 스크롤을 맨 아래로
+            sb = self.tick_log_window.verticalScrollBar()
+            sb.setValue(sb.maximum())
+
     # ── [v8.0] 지수 표시 ───────────────────────────────
     def _update_index_labels(self, state: dict):
         """지수 라벨 텍스트 및 색상 갱신."""
@@ -982,7 +1041,7 @@ class TradingUI(QMainWindow):
         self._index_chart_win.show()
         self._index_chart_win.raise_()
 
-    # ── [v7.5] 블랙리스트 관리 ──
+    # ── [v9.0] 블랙리스트 관리 (모드 3가지) ──
     def _on_blacklist_toggle(self, state):
         cfg = self.config_mgr.config
         bl_enabled = (state == Qt.Checked)
@@ -993,22 +1052,42 @@ class TradingUI(QMainWindow):
         except Exception:
             pass
 
-        # [Fix v8.2] 토글 변경 시 상태 라벨 즉시 갱신
         bl_count = self.bl_table.rowCount()
         if bl_enabled:
-            self.bl_count_label.setText(f"🔒 블랙리스트 활성화 | 합: {bl_count}종목")
+            self.bl_count_label.setText(f"🔒 {bl_count}종목")
             self.bl_count_label.setStyleSheet(f"font-weight: bold; color: {COLORS['accent_green']};")
             self._send_log("🔒 블랙리스트 활성화 — 리스트의 종목은 매수에서 제외됩니다")
         else:
-            self.bl_count_label.setText(f"🔓 블랙리스트 비활성 | 합: {bl_count}종목 (필터링 안 됨)")
+            self.bl_count_label.setText(f"🔓 {bl_count}종목 (비활성)")
             self.bl_count_label.setStyleSheet(f"font-weight: bold; color: {COLORS['warning_orange']};")
             self._send_log("🔓 블랙리스트 비활성화 — 리스트의 종목도 매수될 수 있습니다")
+
+    def _on_bl_mode_changed(self, index):
+        """블랙리스트 모드 변경 → 설정 저장 + 엔진 전달."""
+        mode = index + 1  # 1-based
+        cfg = self.config_mgr.config
+        cfg["blacklist_mode"] = mode
+        self.config_mgr.save(cfg)
+        try:
+            self.ipc_server.send_command("APPLY_SETTINGS", json.dumps(cfg, ensure_ascii=False))
+        except Exception:
+            pass
+        mode_names = {1: "손절만 자동등록", 2: "전체 자동 + 수동해제", 3: "완전 수동"}
+        self._send_log(f"🔄 블랙리스트 모드 변경: {mode_names.get(mode, '?')}")
 
     def _add_blacklist(self):
         code = self.bl_code_input.text().strip()
         if len(code) == 6 and code.isdigit():
             self.ipc_server.send_command("ADD_BLACKLIST", code)
             self.bl_code_input.clear()
+
+    def _add_blacklist_from_traded(self, code: str):
+        """당일 매매 종목에서 [+] 클릭 → 블랙리스트 추가."""
+        self.ipc_server.send_command("ADD_BLACKLIST", code)
+
+    def _remove_blacklist_item(self, code: str):
+        """블랙리스트에서 [해제] 클릭 → 블랙리스트 제거."""
+        self.ipc_server.send_command("REMOVE_BLACKLIST", code)
 
     def _remove_blacklist(self):
         for item in self.bl_table.selectedItems():
@@ -1026,20 +1105,66 @@ class TradingUI(QMainWindow):
             self.bl_lookup_label.setText("")
 
     def _update_bl_table(self, bl_dict):
-        self.bl_table.setRowCount(len(bl_dict))
-
-        # [Fix v8.2] 블랙리스트 활성/비활성 상태를 명확히 표시
+        """블랙리스트 + 당일 매매 종목 테이블 업데이트."""
+        state = getattr(self, '_last_state', {})
+        bl_tags = state.get("blacklist_tags", {})
+        traded_today = state.get("traded_today", {})
         bl_enabled = self.bl_toggle_cb.isChecked()
+
+        # ── 우측: 블랙리스트 테이블 ──
+        self.bl_table.setRowCount(len(bl_dict))
+        for row, (code, name) in enumerate(sorted(bl_dict.items())):
+            tag = bl_tags.get(code, "수동")
+            for col, txt in enumerate([code, name or code, tag]):
+                item = QTableWidgetItem(txt)
+                item.setTextAlignment(Qt.AlignCenter)
+                if col == 2:
+                    # 태그 색상: 자동=노랑, 수동=초록
+                    color = COLORS.get('warning_orange', '#ff9800') if '자동' in tag else COLORS.get('accent_green', '#34d399')
+                    item.setForeground(QBrush(QColor(color)))
+                    item.setFont(QFont("Malgun Gothic", 9, QFont.Bold))
+                self.bl_table.setItem(row, col, item)
+            # [해제] 버튼
+            rm_btn = QPushButton("해제")
+            rm_btn.setFixedHeight(26)
+            rm_btn.setStyleSheet("font-size: 11px;")
+            rm_btn.clicked.connect(lambda _, c=code: self._remove_blacklist_item(c))
+            self.bl_table.setCellWidget(row, 3, rm_btn)
+
+        # ── 좌측: 당일 매매 종목 테이블 ──
+        # 블랙리스트에 없는 종목만 [+] 버튼 활성
+        self.bl_traded_table.setRowCount(len(traded_today))
+        for row, (code, info) in enumerate(sorted(traded_today.items())):
+            name = info.get("name", code)
+            reason = info.get("reason", "")
+            is_in_bl = code in bl_dict
+            for col, txt in enumerate([code, name, reason]):
+                item = QTableWidgetItem(txt)
+                item.setTextAlignment(Qt.AlignCenter)
+                if col == 2:
+                    color = COLORS.get('loss_red', '#f87171') if '손절' in reason else COLORS.get('profit_green', '#34d399')
+                    item.setForeground(QBrush(QColor(color)))
+                self.bl_traded_table.setItem(row, col, item)
+            # [+] 버튼 (이미 블랙리스트에 있으면 비활성)
+            add_btn = QPushButton("+")
+            add_btn.setFixedHeight(26)
+            add_btn.setStyleSheet("font-size: 13px; font-weight: bold;")
+            if is_in_bl:
+                add_btn.setEnabled(False)
+                add_btn.setText("✓")
+                add_btn.setToolTip("이미 블랙리스트에 등록됨")
+            else:
+                add_btn.clicked.connect(lambda _, c=code: self._add_blacklist_from_traded(c))
+                add_btn.setToolTip("블랙리스트에 추가")
+            self.bl_traded_table.setCellWidget(row, 3, add_btn)
+
+        # 카운트 라벨
         if bl_enabled:
-            self.bl_count_label.setText(f"🔒 블랙리스트 활성화 | 합: {len(bl_dict)}종목")
+            self.bl_count_label.setText(f"🔒 {len(bl_dict)}종목")
             self.bl_count_label.setStyleSheet(f"font-weight: bold; color: {COLORS['accent_green']};")
         else:
-            self.bl_count_label.setText(f"🔓 블랙리스트 비활성 | 합: {len(bl_dict)}종목 (필터링 안 됨)")
+            self.bl_count_label.setText(f"🔓 {len(bl_dict)}종목 (비활성)")
             self.bl_count_label.setStyleSheet(f"font-weight: bold; color: {COLORS['warning_orange']};")
-
-        for row, (code, name) in enumerate(sorted(bl_dict.items())):
-            for col, txt in enumerate([code, name or code, "당일 매수"]):
-                self.bl_table.setItem(row, col, QTableWidgetItem(txt))
 
     def _update_portfolio_table(self, port):
         self.table.setRowCount(len(port))
@@ -1481,6 +1606,62 @@ class TradingUI(QMainWindow):
         self.index_target_cb.currentIndexChanged.connect(self._mark_config_dirty)
         s3.addWidget(self.index_target_cb, 4, 4, 1, 2)
 
+        # ── [v9.0] 틱 감시 설정 ──
+        div_tick = QFrame(); div_tick.setObjectName("section_divider"); div_tick.setFrameShape(QFrame.HLine)
+        s3.addWidget(div_tick, 5, 0, 1, 6)
+
+        self.tick_monitor_cb = ToggleSwitch("👁️ 틱 감시 (글로벌)")
+        self.tick_monitor_cb.setToolTip(
+            "ON: 조건식 편입 종목에 대해 대량매수 감지 후 매수 (세력 진입 포착)\n"
+            "OFF: 조건식 편입 즉시 매수 (기존 방식)\n"
+            "※ 조건식별 오버라이드 가능"
+        )
+        self.tick_monitor_cb.stateChanged.connect(self._mark_config_dirty)
+        s3.addWidget(self.tick_monitor_cb, 6, 0)
+
+        lbl_tm_thr = QLabel("체결금액"); lbl_tm_thr.setObjectName("setting_label")
+        s3.addWidget(lbl_tm_thr, 6, 1)
+        self.tick_threshold_spin = QSpinBox()
+        self.tick_threshold_spin.setRange(1_000_000, 500_000_000)
+        self.tick_threshold_spin.setSingleStep(5_000_000)
+        self.tick_threshold_spin.setSuffix("원")
+        self.tick_threshold_spin.setValue(30_000_000)
+        self.tick_threshold_spin.setToolTip("단일 체결 금액 임계값 (이 금액 이상의 매수 체결을 카운트)")
+        self.tick_threshold_spin.valueChanged.connect(self._mark_config_dirty)
+        s3.addWidget(self.tick_threshold_spin, 6, 2)
+
+        lbl_tm_cnt = QLabel("횟수"); lbl_tm_cnt.setObjectName("setting_label")
+        s3.addWidget(lbl_tm_cnt, 6, 3)
+        self.tick_count_spin = QSpinBox()
+        self.tick_count_spin.setRange(1, 20)
+        self.tick_count_spin.setValue(4)
+        self.tick_count_spin.setSuffix("회")
+        self.tick_count_spin.setToolTip("시간 창 내 대량 매수 체결 필요 횟수")
+        self.tick_count_spin.valueChanged.connect(self._mark_config_dirty)
+        s3.addWidget(self.tick_count_spin, 6, 4)
+
+        lbl_tm_win = QLabel("시간창"); lbl_tm_win.setObjectName("setting_label")
+        s3.addWidget(lbl_tm_win, 7, 1)
+        self.tick_window_spin = QDoubleSpinBox()
+        self.tick_window_spin.setRange(0.5, 10.0)
+        self.tick_window_spin.setSingleStep(0.5)
+        self.tick_window_spin.setSuffix("초")
+        self.tick_window_spin.setValue(2.0)
+        self.tick_window_spin.setToolTip("슬라이딩 윈도우 시간 창 (초)")
+        self.tick_window_spin.valueChanged.connect(self._mark_config_dirty)
+        s3.addWidget(self.tick_window_spin, 7, 2)
+
+        lbl_tm_dip = QLabel("눌림%"); lbl_tm_dip.setObjectName("setting_label")
+        s3.addWidget(lbl_tm_dip, 7, 3)
+        self.tick_dip_spin = QDoubleSpinBox()
+        self.tick_dip_spin.setRange(-5.0, 0.0)
+        self.tick_dip_spin.setSingleStep(0.1)
+        self.tick_dip_spin.setSuffix("%")
+        self.tick_dip_spin.setValue(-0.5)
+        self.tick_dip_spin.setToolTip("2차 매수(눌림) 발동 하락률 (1차 매수가 대비)")
+        self.tick_dip_spin.valueChanged.connect(self._mark_config_dirty)
+        s3.addWidget(self.tick_dip_spin, 7, 4)
+
         settings_vbox.addLayout(s3)
 
         # ── 적용 버튼 ──
@@ -1545,23 +1726,45 @@ class TradingUI(QMainWindow):
         cond_tab.setLayout(cond_layout)
         self.tabs.addTab(cond_tab, "🔍 조건식")
 
-        # ── [v7.5] 🚫 블랙리스트 관리 탭 ──
+        # ── [v9.0] 🚫 블랙리스트 관리 탭 (모드 3가지) ──
         bl_tab = QWidget()
         bl_layout = QVBoxLayout()
+
+        # 상단: 토글 + 모드 선택 드롭다운
         bl_header = QHBoxLayout()
         self.bl_toggle_cb = ToggleSwitch("🔒 블랙리스트 활성화")
         self.bl_toggle_cb.setChecked(self.config_mgr.get("blacklist_enabled", True))
         self.bl_toggle_cb.stateChanged.connect(self._on_blacklist_toggle)
+        bl_header.addWidget(self.bl_toggle_cb)
+
+        bl_header.addWidget(QLabel("모드:"))
+        self.bl_mode_cb = QComboBox()
+        self.bl_mode_cb.addItems([
+            "① 손절만 자동등록",
+            "② 전체 자동 + 수동해제",
+            "③ 완전 수동",
+        ])
+        self.bl_mode_cb.setToolTip(
+            "① 손절 종목만 자동 등록. 익절 종목은 좌측에서 수동 추가 가능.\n"
+            "② 당일 매매 종목 전체 자동 등록. 개별 해제 가능. 해제 후 재등록 없음.\n"
+            "③ 자동 등록 없음. 좌측 당일 매매 종목에서 직접 추가만."
+        )
+        self.bl_mode_cb.setCurrentIndex(self.config_mgr.get("blacklist_mode", 1) - 1)
+        self.bl_mode_cb.currentIndexChanged.connect(self._on_bl_mode_changed)
+        bl_header.addWidget(self.bl_mode_cb)
+
         self.bl_count_label = QLabel("0종목")
         self.bl_count_label.setStyleSheet("font-weight: bold;")
+        bl_header.addWidget(self.bl_count_label)
+        bl_header.addStretch()
+
         bl_clear_btn = QPushButton("🗑 초기화")
         bl_clear_btn.setMinimumWidth(95)
         bl_clear_btn.clicked.connect(self._clear_blacklist)
-        bl_header.addWidget(self.bl_toggle_cb)
-        bl_header.addWidget(self.bl_count_label)
-        bl_header.addStretch()
         bl_header.addWidget(bl_clear_btn)
         bl_layout.addLayout(bl_header)
+
+        # 수동 코드 입력 행
         bl_add = QHBoxLayout()
         self.bl_code_input = QLineEdit()
         self.bl_code_input.setPlaceholderText("종목코드 6자리 (예: 005930)")
@@ -1572,24 +1775,82 @@ class TradingUI(QMainWindow):
         bl_add_btn = QPushButton("➕ 추가")
         bl_add_btn.setMinimumWidth(80)
         bl_add_btn.clicked.connect(self._add_blacklist)
-        bl_rm_btn = QPushButton("➖ 제거")
-        bl_rm_btn.setMinimumWidth(80)
-        bl_rm_btn.clicked.connect(self._remove_blacklist)
         bl_add.addWidget(QLabel("종목코드:"))
         bl_add.addWidget(self.bl_code_input)
         bl_add.addWidget(self.bl_lookup_label, stretch=1)
         bl_add.addWidget(bl_add_btn)
-        bl_add.addWidget(bl_rm_btn)
         bl_layout.addLayout(bl_add)
-        self.bl_table = QTableWidget(0, 3)
-        self.bl_table.setHorizontalHeaderLabels(["종목코드", "종목명", "사유"])
+
+        # 좌우 분할: 좌=당일 매매 종목, 우=블랙리스트
+        bl_split = QHBoxLayout()
+
+        # 좌측: 당일 매매 종목 + [+] 버튼
+        left_box = QGroupBox("📋 당일 매매 종목")
+        left_vbox = QVBoxLayout()
+        self.bl_traded_table = QTableWidget(0, 4)
+        self.bl_traded_table.setHorizontalHeaderLabels(["종목코드", "종목명", "사유", ""])
+        self.bl_traded_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.bl_traded_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.Fixed)
+        self.bl_traded_table.setColumnWidth(3, 50)
+        self.bl_traded_table.setAlternatingRowColors(True)
+        self.bl_traded_table.verticalHeader().setVisible(False)
+        left_vbox.addWidget(self.bl_traded_table)
+        left_box.setLayout(left_vbox)
+        bl_split.addWidget(left_box, stretch=1)
+
+        # 우측: 블랙리스트 + 태그 + [해제] 버튼
+        right_box = QGroupBox("🚫 블랙리스트")
+        right_vbox = QVBoxLayout()
+        self.bl_table = QTableWidget(0, 4)
+        self.bl_table.setHorizontalHeaderLabels(["종목코드", "종목명", "태그", ""])
         self.bl_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.bl_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.Fixed)
+        self.bl_table.setColumnWidth(3, 55)
         self.bl_table.setAlternatingRowColors(True)
         self.bl_table.verticalHeader().setVisible(False)
         self.bl_table.setSelectionBehavior(QTableWidget.SelectRows)
-        bl_layout.addWidget(self.bl_table, stretch=1)
+        right_vbox.addWidget(self.bl_table)
+        right_box.setLayout(right_vbox)
+        bl_split.addWidget(right_box, stretch=1)
+
+        bl_layout.addLayout(bl_split, stretch=1)
         bl_tab.setLayout(bl_layout)
         self.tabs.addTab(bl_tab, "🚫 블랙리스트")
+
+        # ── [v9.0] 👁️ 틱 감시 모니터 탭 ──
+        tick_tab = QWidget()
+        tick_layout = QVBoxLayout()
+
+        tick_header = QHBoxLayout()
+        self.tick_count_label = QLabel("감시 0종목")
+        self.tick_count_label.setStyleSheet("font-weight: bold; font-size: 12px;")
+        tick_header.addWidget(self.tick_count_label)
+        tick_header.addStretch()
+        tick_layout.addLayout(tick_header)
+
+        # 감시 종목 테이블
+        self.tick_table = QTableWidget(0, 6)
+        self.tick_table.setHorizontalHeaderLabels(
+            ["종목명", "종목코드", "조건식", "상태", "체결 카운트", "임계값"]
+        )
+        self.tick_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.tick_table.setAlternatingRowColors(True)
+        self.tick_table.verticalHeader().setVisible(False)
+        self.tick_table.setMaximumHeight(200)
+        tick_layout.addWidget(self.tick_table)
+
+        # 틱 감시 로그
+        tick_log_label = QLabel("📋 틱 감시 로그")
+        tick_log_label.setStyleSheet("font-weight: bold; margin-top: 6px;")
+        tick_layout.addWidget(tick_log_label)
+        self.tick_log_window = QTextEdit()
+        self.tick_log_window.setReadOnly(True)
+        self.tick_log_window.setObjectName("log_window")
+        self.tick_log_window.setFont(QFont("Consolas", 10))
+        tick_layout.addWidget(self.tick_log_window, stretch=1)
+
+        tick_tab.setLayout(tick_layout)
+        self.tabs.addTab(tick_tab, "👁️ 틱감시")
 
         stats_tab = QWidget()
         stats_layout = QVBoxLayout()
@@ -1675,6 +1936,7 @@ class TradingUI(QMainWindow):
             "condition_params": self.config_mgr.get("condition_params", {}),
             "entry_filters": self.config_mgr.get("entry_filters", {}),
             "blacklist_enabled": self.bl_toggle_cb.isChecked(),
+            "blacklist_mode": self.bl_mode_cb.currentIndex() + 1,
             "split_buy_enabled": self.split_buy_cb.isChecked(),
             "split_buy_rounds": self.split_buy_rounds_spin.value(),
             "split_buy_ratios": [self.split_buy_ratio1.value(), 100 - self.split_buy_ratio1.value()] if self.split_buy_rounds_spin.value() == 2 else [self.split_buy_ratio1.value(), self.split_buy_ratio2.value(), max(0, 100 - self.split_buy_ratio1.value() - self.split_buy_ratio2.value())],
@@ -1689,6 +1951,12 @@ class TradingUI(QMainWindow):
                 "둘 다(AND)": "both", "둘 중 하나(OR)": "either",
                 "KOSPI만": "kospi", "KOSDAQ만": "kosdaq"
             }.get(self.index_target_cb.currentText(), "both"),
+            # [v9.0] 틱 감시
+            "tick_monitor_enabled":      self.tick_monitor_cb.isChecked(),
+            "tick_monitor_threshold":    self.tick_threshold_spin.value(),
+            "tick_monitor_count":        self.tick_count_spin.value(),
+            "tick_monitor_window_sec":   round(self.tick_window_spin.value(), 1),
+            "tick_monitor_dip_pct":      round(self.tick_dip_spin.value(), 1),
             # 계좌는 secrets.json의 target_account를 단일 진실의 원천으로 사용 (config 저장 불필요)
         }
         self.config_mgr.save(config)
@@ -1749,11 +2017,17 @@ class TradingUI(QMainWindow):
             "default_conditions": "기본 조건식",
             "minimize_to_tray": "트레이 최소화",
             "blacklist_enabled": "블랙리스트",
+            "blacklist_mode": "BL모드",
             "split_buy_enabled": "분할매수",
             "split_sell_enabled": "분할매도",
             "index_filter_enabled": "지수필터",
             "index_filter_threshold": "지수필터 임계값",
             "index_filter_target": "지수필터 대상",
+            "tick_monitor_enabled": "틱감시",
+            "tick_monitor_threshold": "틱감시 체결금액",
+            "tick_monitor_count": "틱감시 횟수",
+            "tick_monitor_window_sec": "틱감시 시간창",
+            "tick_monitor_dip_pct": "틱감시 눌림%",
         }
         changed_lines = []
         for k, label in label_map.items():
@@ -1815,6 +2089,7 @@ class TradingUI(QMainWindow):
         order_type = c.get("order_type", "03")
         self.order_type_cb.setCurrentText("시장가 (03)" if order_type == "03" else "최유리지정가 (06)")
         self.bl_toggle_cb.setChecked(c.get("blacklist_enabled", True))
+        self.bl_mode_cb.setCurrentIndex(c.get("blacklist_mode", 1) - 1)
         self.split_buy_cb.setChecked(c.get("split_buy_enabled", False))
         self.split_buy_rounds_spin.setValue(c.get("split_buy_rounds", 2))
         ratios = c.get("split_buy_ratios", [30, 70])
@@ -1840,6 +2115,13 @@ class TradingUI(QMainWindow):
             target_map.get(c.get("index_filter_target", "both"), "둘 다(AND)")
         )
 
+        # [v9.0] 틱 감시
+        self.tick_monitor_cb.setChecked(c.get("tick_monitor_enabled", False))
+        self.tick_threshold_spin.setValue(c.get("tick_monitor_threshold", 30_000_000))
+        self.tick_count_spin.setValue(c.get("tick_monitor_count", 4))
+        self.tick_window_spin.setValue(c.get("tick_monitor_window_sec", 2.0))
+        self.tick_dip_spin.setValue(c.get("tick_monitor_dip_pct", -0.5))
+
         self._block_signals(False)
         self._update_split_sell_guide()
 
@@ -1851,7 +2133,9 @@ class TradingUI(QMainWindow):
                   self.split_buy_cb, self.split_buy_rounds_spin, self.split_buy_ratio1,
                   self.split_buy_ratio2, self.split_buy_confirm,
                   self.split_sell_cb, self.split_sell_t1_ratio, self.split_sell_offset,
-                  self.index_filter_cb, self.index_threshold_spin, self.index_target_cb]:
+                  self.index_filter_cb, self.index_threshold_spin, self.index_target_cb,
+                  self.tick_monitor_cb, self.tick_threshold_spin, self.tick_count_spin,
+                  self.tick_window_spin, self.tick_dip_spin, self.bl_mode_cb]:
             w.blockSignals(block)
 
     def _update_split_sell_guide(self):
