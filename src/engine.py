@@ -318,6 +318,17 @@ class TradingEngine(QMainWindow):
                 unrealized += calc_sell_cost(data['buy_price'], data['current_price'], data['qty'], self.is_mock)
         return unrealized
 
+    def _net_yield(self, buy_price: int, sell_price: int, qty: int) -> float:
+        """
+        [Fix v8.2] 수수료/세금 포함 순수익률 계산.
+        엔진의 모든 매도 판정(익절/손절/TS)과 UI 표시가 이 기준으로 통일됩니다.
+        """
+        if buy_price <= 0 or qty <= 0:
+            return 0.0
+        invested = buy_price * qty
+        net_pnl = calc_sell_cost(buy_price, sell_price, qty, self.is_mock)
+        return (net_pnl / invested) * 100
+
     def _log_condition_signal(self, code: str, name: str, cond_name: str, result: str, reason: str = ""):
         """조건식 편입 기록을 남깁니다 (UI 실시간 표시 + DB 영구 저장)."""
         entry = {
@@ -1497,8 +1508,10 @@ class TradingEngine(QMainWindow):
             except Exception as e:
                 logger.error(f"❌ [분할매수] {code} 오류: {e}")
 
-            yield_rate = (curr_p - data['buy_price']) / data['buy_price'] * 100
-            high_yield = (data['high_price'] - data['buy_price']) / data['buy_price'] * 100
+            # [Fix v8.2] 수수료/세금 포함 순수익률 기준으로 모든 매도 판정 통일
+            qty = data['qty']
+            yield_rate = self._net_yield(data['buy_price'], curr_p, qty)
+            high_yield = self._net_yield(data['buy_price'], data['high_price'], qty)
             c_name = data.get('cond_name', '')
 
             ts_act = self.config_mgr.get_condition_param(c_name, "ts_activation") or 4.0
@@ -1659,8 +1672,9 @@ class TradingEngine(QMainWindow):
         curr_p   = p.get('current_price', 0)
         buy_p    = p.get('buy_price', 0)
         high_p   = p.get('high_price', 0)
-        pct      = (curr_p - buy_p) / buy_p * 100 if buy_p > 0 else 0.0
-        high_pct = (high_p - buy_p) / buy_p * 100 if buy_p > 0 else 0.0
+        # [Fix v8.2] 수수료/세금 포함 순수익률로 로그 표시
+        pct      = self._net_yield(buy_p, curr_p, qty)
+        high_pct = self._net_yield(buy_p, high_p, qty)
         logger.info(
             f"📤 [매도주문] {p.get('name','')}({code}) {reason} | "
             f"{qty}주 | 현재={curr_p:,} ({pct:+.2f}%) | 고점={high_p:,} ({high_pct:+.2f}%)"
