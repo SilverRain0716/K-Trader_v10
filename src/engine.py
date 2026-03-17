@@ -204,15 +204,15 @@ class TickMonitor:
         """
         종목 감시 등록. 최대 감시 수 초과 시 False 반환.
         """
-        max_watch = self.config_mgr.get("tick_monitor_max_watch", 10)
+        max_watch = self.config_mgr.get("tick_monitor_max_watch", 15)
         active = [c for c, s in self._watched.items() if s['phase'] != self.PHASE_DONE]
         if len(active) >= max_watch:
             self._log(f"[틱감시] ⚠️ {name}({code}) 등록 불가: 감시 한도 {max_watch}개 초과")
             return False
 
-        threshold = self._get_param(cond_name, "threshold") or 30_000_000
-        count = self._get_param(cond_name, "count") or 4
-        window_sec = self._get_param(cond_name, "window_sec") or 2.0
+        threshold = self._get_param(cond_name, "threshold") or 10_000_000
+        count = self._get_param(cond_name, "count") or 3
+        window_sec = self._get_param(cond_name, "window_sec") or 5.0
 
         self._watched[code] = {
             "name": name,
@@ -289,7 +289,7 @@ class TickMonitor:
 
         # ── 타임아웃 체크 ──
         if s["phase"] == self.PHASE_WATCHING:
-            expire = self._get_param(s["cond_name"], "expire_sec") or 120
+            expire = self._get_param(s["cond_name"], "expire_sec") or 180
             if now - s["start_ts"] > expire:
                 self._log(f"[틱감시] ⏰ {s['name']}({code}) 타임아웃 ({expire}초)")
                 self.unwatch(code, "감시 타임아웃")
@@ -408,7 +408,7 @@ class TickMonitor:
         for code in list(self._watched.keys()):
             s = self._watched[code]
             if s["phase"] == self.PHASE_WATCHING:
-                expire = self._get_param(s["cond_name"], "expire_sec") or 120
+                expire = self._get_param(s["cond_name"], "expire_sec") or 180
                 if now - s["start_ts"] > expire:
                     expired.append(code)
             elif s["phase"] == self.PHASE_DIP_WAIT:

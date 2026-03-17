@@ -238,15 +238,15 @@ DEFAULT_CONFIG = {
 
     # [v9.0] 틱 감시 (TickMonitor) — 세력 진입 감지 매수
     "tick_monitor_enabled": False,           # 글로벌 틱 감시 활성화 (조건식별 오버라이드 가능)
-    "tick_monitor_threshold": 30_000_000,    # 대량 체결 판정 금액 (원)
-    "tick_monitor_count": 4,                 # 시간 창 내 필요 대량 매수 횟수
-    "tick_monitor_window_sec": 2.0,          # 슬라이딩 윈도우 시간 창 (초)
-    "tick_monitor_max_watch": 10,            # 틱 감시 대기 종목 최대 수
+    "tick_monitor_threshold": 10_000_000,    # 대량 체결 판정 금액 (원) [v9.1] 3천만→1천만
+    "tick_monitor_count": 3,                 # 시간 창 내 필요 대량 매수 횟수 [v9.1] 4→3
+    "tick_monitor_window_sec": 5.0,          # 슬라이딩 윈도우 시간 창 (초) [v9.1] 2→5초
+    "tick_monitor_max_watch": 15,            # 틱 감시 대기 종목 최대 수 [v9.1] 10→15
     "tick_monitor_buy_ratio": 50,            # 1차 매수 비중 (%, 나머지가 2차)
     "tick_monitor_dip_pct": -0.5,            # 눌림 판정 하락률 (1차 매수가 대비, %)
     "tick_monitor_dip_rebuy_count": 1,       # 눌림 중 대량 매수 재출현 필요 횟수
     "tick_monitor_dip_timeout_sec": 60,      # 눌림 대기 타임아웃 (초)
-    "tick_monitor_expire_sec": 120,          # 조건식 편입 후 신호 미발생 시 감시 해제 (초)
+    "tick_monitor_expire_sec": 180,          # 조건식 편입 후 신호 미발생 시 감시 해제 (초) [v9.1] 120→180
 }
 
 

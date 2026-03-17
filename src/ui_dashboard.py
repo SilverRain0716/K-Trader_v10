@@ -312,6 +312,19 @@ class ConditionParamDialog(QDialog):
         self.tm_dip.setValue(cp.get("tick_monitor_dip_pct", config_mgr.get("tick_monitor_dip_pct", -0.5)))
         g2.addWidget(self.tm_dip, 2, 1)
 
+        # [v9.1] 추가 파라미터
+        g2.addWidget(QLabel("감시타임아웃"), 2, 2)
+        self.tm_expire = QSpinBox()
+        self.tm_expire.setRange(30, 600); self.tm_expire.setSingleStep(30); self.tm_expire.setSuffix("초")
+        self.tm_expire.setValue(cp.get("tick_monitor_expire_sec", config_mgr.get("tick_monitor_expire_sec", 180)))
+        g2.addWidget(self.tm_expire, 2, 3)
+
+        g2.addWidget(QLabel("1차비중"), 3, 0)
+        self.tm_ratio = QSpinBox()
+        self.tm_ratio.setRange(10, 100); self.tm_ratio.setSingleStep(10); self.tm_ratio.setSuffix("%")
+        self.tm_ratio.setValue(cp.get("tick_monitor_buy_ratio", config_mgr.get("tick_monitor_buy_ratio", 50)))
+        g2.addWidget(self.tm_ratio, 3, 1)
+
         grp2.setLayout(g2)
         layout.addWidget(grp2)
 
@@ -345,6 +358,8 @@ class ConditionParamDialog(QDialog):
             "tick_monitor_count": self.tm_cnt.value(),
             "tick_monitor_window_sec": round(self.tm_win.value(), 1),
             "tick_monitor_dip_pct": round(self.tm_dip.value(), 1),
+            "tick_monitor_expire_sec": self.tm_expire.value(),
+            "tick_monitor_buy_ratio": self.tm_ratio.value(),
         }
 
 
@@ -1078,7 +1093,7 @@ class TradingUI(QMainWindow):
                 self.tick_table.setItem(row, col, item)
 
         active_count = len([c for c, s in watched.items() if s.get("phase") != "DONE"])
-        self.tick_count_label.setText(f"감시 {active_count}종목 / 최대 {self.config_mgr.get('tick_monitor_max_watch', 10)}개")
+        self.tick_count_label.setText(f"감시 {active_count}종목 / 최대 {self.config_mgr.get('tick_monitor_max_watch', 15)}개")
 
         # 로그 갱신 (새 항목만 추가)
         prev_log_count = getattr(self, '_tick_log_count', 0)
@@ -1834,6 +1849,39 @@ class TradingUI(QMainWindow):
         self.tick_dip_spin.valueChanged.connect(self._mark_config_dirty)
         s3.addWidget(self.tick_dip_spin, 7, 4)
 
+        # [v9.1] 틱감시 추가 파라미터 (row 8)
+        lbl_tm_max = QLabel("감시한도"); lbl_tm_max.setObjectName("setting_label")
+        s3.addWidget(lbl_tm_max, 8, 0)
+        self.tick_max_watch_spin = QSpinBox()
+        self.tick_max_watch_spin.setRange(1, 30)
+        self.tick_max_watch_spin.setValue(15)
+        self.tick_max_watch_spin.setSuffix("종목")
+        self.tick_max_watch_spin.setToolTip("틱 감시 동시 감시 종목 최대 수")
+        self.tick_max_watch_spin.valueChanged.connect(self._mark_config_dirty)
+        s3.addWidget(self.tick_max_watch_spin, 8, 1)
+
+        lbl_tm_expire = QLabel("감시타임아웃"); lbl_tm_expire.setObjectName("setting_label")
+        s3.addWidget(lbl_tm_expire, 8, 2)
+        self.tick_expire_spin = QSpinBox()
+        self.tick_expire_spin.setRange(30, 600)
+        self.tick_expire_spin.setSingleStep(30)
+        self.tick_expire_spin.setValue(180)
+        self.tick_expire_spin.setSuffix("초")
+        self.tick_expire_spin.setToolTip("조건식 편입 후 신호 미발생 시 감시 해제 (초)")
+        self.tick_expire_spin.valueChanged.connect(self._mark_config_dirty)
+        s3.addWidget(self.tick_expire_spin, 8, 3)
+
+        lbl_tm_ratio = QLabel("1차비중"); lbl_tm_ratio.setObjectName("setting_label")
+        s3.addWidget(lbl_tm_ratio, 8, 4)
+        self.tick_buy_ratio_spin = QSpinBox()
+        self.tick_buy_ratio_spin.setRange(10, 100)
+        self.tick_buy_ratio_spin.setSingleStep(10)
+        self.tick_buy_ratio_spin.setValue(50)
+        self.tick_buy_ratio_spin.setSuffix("%")
+        self.tick_buy_ratio_spin.setToolTip("1차 매수 비중 (나머지는 2차 눌림매수)")
+        self.tick_buy_ratio_spin.valueChanged.connect(self._mark_config_dirty)
+        s3.addWidget(self.tick_buy_ratio_spin, 8, 5)
+
         settings_vbox.addLayout(s3)
 
         # ── 적용 버튼 ──
@@ -2129,6 +2177,10 @@ class TradingUI(QMainWindow):
             "tick_monitor_count":        self.tick_count_spin.value(),
             "tick_monitor_window_sec":   round(self.tick_window_spin.value(), 1),
             "tick_monitor_dip_pct":      round(self.tick_dip_spin.value(), 1),
+            # [v9.1] 틱감시 추가 파라미터
+            "tick_monitor_max_watch":    self.tick_max_watch_spin.value(),
+            "tick_monitor_expire_sec":   self.tick_expire_spin.value(),
+            "tick_monitor_buy_ratio":    self.tick_buy_ratio_spin.value(),
             # 계좌는 secrets.json의 target_account를 단일 진실의 원천으로 사용 (config 저장 불필요)
         }
         self.config_mgr.save(config)
@@ -2200,6 +2252,9 @@ class TradingUI(QMainWindow):
             "tick_monitor_count": "틱감시 횟수",
             "tick_monitor_window_sec": "틱감시 시간창",
             "tick_monitor_dip_pct": "틱감시 눌림%",
+            "tick_monitor_max_watch": "틱감시 감시한도",
+            "tick_monitor_expire_sec": "틱감시 타임아웃",
+            "tick_monitor_buy_ratio": "틱감시 1차비중",
         }
         changed_lines = []
         for k, label in label_map.items():
@@ -2289,10 +2344,14 @@ class TradingUI(QMainWindow):
 
         # [v9.0] 틱 감시
         self.tick_monitor_cb.setChecked(c.get("tick_monitor_enabled", False))
-        self.tick_threshold_spin.setValue(c.get("tick_monitor_threshold", 30_000_000))
-        self.tick_count_spin.setValue(c.get("tick_monitor_count", 4))
-        self.tick_window_spin.setValue(c.get("tick_monitor_window_sec", 2.0))
+        self.tick_threshold_spin.setValue(c.get("tick_monitor_threshold", 10_000_000))
+        self.tick_count_spin.setValue(c.get("tick_monitor_count", 3))
+        self.tick_window_spin.setValue(c.get("tick_monitor_window_sec", 5.0))
         self.tick_dip_spin.setValue(c.get("tick_monitor_dip_pct", -0.5))
+        # [v9.1] 추가 파라미터
+        self.tick_max_watch_spin.setValue(c.get("tick_monitor_max_watch", 15))
+        self.tick_expire_spin.setValue(c.get("tick_monitor_expire_sec", 180))
+        self.tick_buy_ratio_spin.setValue(c.get("tick_monitor_buy_ratio", 50))
 
         self._block_signals(False)
         self._update_split_sell_guide()
@@ -2307,7 +2366,9 @@ class TradingUI(QMainWindow):
                   self.split_sell_cb, self.split_sell_t1_ratio, self.split_sell_offset,
                   self.index_filter_cb, self.index_threshold_spin, self.index_target_cb,
                   self.tick_monitor_cb, self.tick_threshold_spin, self.tick_count_spin,
-                  self.tick_window_spin, self.tick_dip_spin, self.bl_mode_cb]:
+                  self.tick_window_spin, self.tick_dip_spin,
+                  self.tick_max_watch_spin, self.tick_expire_spin, self.tick_buy_ratio_spin,
+                  self.bl_mode_cb]:
             w.blockSignals(block)
 
     def _update_split_sell_guide(self):
