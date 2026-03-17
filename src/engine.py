@@ -458,6 +458,7 @@ class TradingEngine(QMainWindow):
         # 추가 예수금 표시(총예수금/주문가능/출금가능)
         self.deposit_total = 0
         self.orderable_amount = 0
+        self._orderable_from_tr = 0  # [Fix v9.1] TR에서 받아온 원본 주문가능금액
         self.withdrawable_amount = 0
         self._deposit_last_ok_ts = time.time()  # [Fix #4] None → TypeError 방지, 초기값은 현재 시각
         self.locked_deposit = 0
@@ -769,10 +770,13 @@ class TradingEngine(QMainWindow):
             logger.error(f"❌ [sync] 정기 예수금 갱신 오류: {e}")
 
         # 예수금/주문가능/출금가능 표시값 보정(항상 내부 상태와 일치하도록)
+        # [Fix v9.1] orderable_amount 이중 차감 버그 수정:
+        #   기존: orderable_amount(이미 체결 차감 반영) - locked_deposit → 매 sync마다 누적 차감
+        #   수정: TR 원본값(_orderable_from_tr) 기준으로 locked만 차감, 체결 차감은 별도 추적
         try:
-            base_cash = int(self.orderable_amount) if int(self.orderable_amount) > 0 else int(self.deposit)
-            # 주문가능은 (현금 기준 - 락)으로 항상 재계산 (TR 값이 있으면 TR 우선)
-            self.orderable_amount = max(0, base_cash - int(self.locked_deposit))
+            # TR 원본값이 있으면 그 기준으로 locked만 차감
+            if hasattr(self, '_orderable_from_tr') and self._orderable_from_tr > 0:
+                self.orderable_amount = max(0, int(self._orderable_from_tr) - int(self.locked_deposit))
             # 총예수금/출금가능은 TR 값이 없을 때만 deposit을 사용
             self.deposit_total = int(self.deposit_total) if int(self.deposit_total) > 0 else int(self.deposit)
             self.withdrawable_amount = int(self.withdrawable_amount) if int(self.withdrawable_amount) > 0 else int(self.deposit)
@@ -960,6 +964,33 @@ class TradingEngine(QMainWindow):
                     pass
         except Exception as e:
             logger.error(f"❌ [틱감시] 타임아웃 정리 오류: {e}")
+
+        # [Fix v9.1] BUY_REQ 유령 항목 정리
+        # 매수 주문 발행 시 portfolio에 qty=0, status='BUY_REQ'로 등록하는데,
+        # 체결이 안 오면(거부, 타임아웃 등) 유령 항목으로 잔류하는 버그 수정.
+        # 60초 내 체결 미수신 시 자동 정리.
+        try:
+            buy_req_timeout = 60  # 초
+            stale_buy_reqs = []
+            for code, data in list(self.portfolio.items()):
+                if data.get('status') == 'BUY_REQ' and data.get('qty', 0) == 0:
+                    req_ts = data.get('last_price_ts', data.get('buy_req_ts', 0))
+                    if req_ts and (now - req_ts) > buy_req_timeout:
+                        stale_buy_reqs.append(code)
+            for code in stale_buy_reqs:
+                data = self.portfolio[code]
+                name = data.get('name', code)
+                locked = data.get('locked_amount', 0)
+                self.locked_deposit = max(0, self.locked_deposit - locked)
+                screen_no = data.get('screen_no', 'ALL')
+                try:
+                    self.kiwoom.dynamicCall("SetRealRemove(QString, QString)", screen_no, code)
+                except Exception:
+                    pass
+                del self.portfolio[code]
+                logger.warning(f"🧹 [정리] {name}({code}) BUY_REQ 유령 항목 제거 (체결 미수신 {buy_req_timeout}초 초과, locked 복구: {locked:,}원)")
+        except Exception as e:
+            logger.error(f"❌ [정리] BUY_REQ 유령 항목 정리 오류: {e}")
 
     # ── 알림 및 검증 ──────────────────────────────────
     def _send_daily_report(self, reason: str = "장 마감 자동 리포트"):
@@ -1380,6 +1411,7 @@ class TradingEngine(QMainWindow):
 
             self.deposit_total = d2 if d2 > 0 else base
             self.orderable_amount = ord_amt if ord_amt > 0 else base
+            self._orderable_from_tr = self.orderable_amount  # [Fix v9.1] TR 원본값 보존 (이중 차감 방지)
             self.withdrawable_amount = wd_amt if wd_amt > 0 else base
 
             self.deposit = base
@@ -1752,8 +1784,9 @@ class TradingEngine(QMainWindow):
             stock_name = self.kiwoom.dynamicCall("GetMasterCodeName(QString)", code)
             cfg = self.config_mgr.config
 
-            # [Fix #4] invest_type에 따라 투자금 계산 방식 분리
-            available = max(0, (self.orderable_amount if self.orderable_amount > 0 else self.deposit) - self.locked_deposit)
+            # [Fix v9.1] invest_type에 따라 투자금 계산 방식 분리
+            # orderable_amount는 _sync_routine에서 이미 locked_deposit 차감 반영됨
+            available = max(0, self.orderable_amount if self.orderable_amount > 0 else self.deposit)
             invest_type = cfg.get("invest_type", "비중(%)")
             invest_val = cfg.get("invest", 20)
 
@@ -2036,12 +2069,15 @@ class TradingEngine(QMainWindow):
         # 기본 필터 재확인 (감시 중 상태 변경 대비)
         if not self.is_trading or not self.calendar.is_trading_allowed():
             logger.info(f"🚫 [틱매수] {name}({code}) 스킵: 매매시간 외")
+            self.tick_monitor._log(f"[틱감시] 🚫 {name}({code}) 매수 스킵: 매매시간 외")
             return
         if code in self.portfolio and is_first:
             logger.info(f"🚫 [틱매수] {name}({code}) 스킵: 이미 보유 중")
+            self.tick_monitor._log(f"[틱감시] 🚫 {name}({code}) 매수 스킵: 이미 보유 중")
             return
         if self._check_loss_limit():
             logger.info(f"🚫 [틱매수] {name}({code}) 스킵: 일일 손실한도 초과")
+            self.tick_monitor._log(f"[틱감시] 🚫 {name}({code}) 매수 스킵: 일일 손실한도 초과")
             return
 
         # 보유한도 체크 (1차 매수 시에만)
@@ -2050,6 +2086,7 @@ class TradingEngine(QMainWindow):
             max_hold = cfg.get("max_hold", 5)
             if holding_count >= max_hold:
                 logger.info(f"🚫 [틱매수] {name}({code}) 스킵: 보유한도 {holding_count}/{max_hold}")
+                self.tick_monitor._log(f"[틱감시] 🚫 {name}({code}) 매수 스킵: 보유한도 {holding_count}/{max_hold}")
                 self.tick_monitor.unwatch(code, "보유한도 초과")
                 try:
                     self.kiwoom.dynamicCall("SetRealRemove(QString, QString)", screen_no or "ALL", code)
@@ -2064,10 +2101,11 @@ class TradingEngine(QMainWindow):
             curr_p = 0
         if curr_p <= 0:
             logger.warning(f"🚫 [틱매수] {name}({code}) 스킵: 현재가 0원")
+            self.tick_monitor._log(f"[틱감시] 🚫 {name}({code}) 매수 스킵: 현재가 0원")
             return
 
-        # 투자금 계산
-        available = max(0, (self.orderable_amount if self.orderable_amount > 0 else self.deposit) - self.locked_deposit)
+        # [Fix v9.1] 투자금 계산 — orderable_amount는 이미 locked 차감 반영됨
+        available = max(0, self.orderable_amount if self.orderable_amount > 0 else self.deposit)
         invest_type = cfg.get("invest_type", "비중(%)")
         invest_val = cfg.get("invest", 20)
 
@@ -2080,6 +2118,7 @@ class TradingEngine(QMainWindow):
         if total_qty <= 0:
             reason = f"예수금 부족 (가용={available:,}, 현재가={curr_p:,})"
             logger.warning(f"🚫 [틱매수] {name}({code}) 스킵: 수량 0주 ({reason})")
+            self.tick_monitor._log(f"[틱감시] 🚫 {name}({code}) 매수 스킵: {reason}")
             return
 
         # 분할 비율 계산
@@ -2142,8 +2181,8 @@ class TradingEngine(QMainWindow):
             already_qty = data.get('qty', 0)
             add_qty = max(1, planned_total - already_qty)
 
-            # 예수금 재확인
-            available = max(0, (self.orderable_amount if self.orderable_amount > 0 else self.deposit) - self.locked_deposit)
+            # [Fix v9.1] 예수금 재확인 — orderable_amount는 이미 locked 차감 반영
+            available = max(0, self.orderable_amount if self.orderable_amount > 0 else self.deposit)
             if curr_p * add_qty > available:
                 add_qty = int(available // curr_p)
                 if add_qty <= 0:
@@ -2193,7 +2232,8 @@ class TradingEngine(QMainWindow):
             if add_qty <= 0:
                 rnd['done'] = True
                 continue
-            available = max(0, (self.orderable_amount if self.orderable_amount > 0 else self.deposit) - self.locked_deposit)
+            # [Fix v9.1] orderable_amount는 이미 locked 차감 반영
+            available = max(0, self.orderable_amount if self.orderable_amount > 0 else self.deposit)
             if curr_p * add_qty > available:
                 logger.warning(f"⚠️ [분할매수] {data['name']}({code}) {i+1}차 예수금 부족")
                 return
@@ -2276,11 +2316,15 @@ class TradingEngine(QMainWindow):
                 p['high_price'] = max(p['high_price'], p['buy_price'], exec_price)
                 cost = exec_price * exec_qty
                 self.locked_deposit = max(0, self.locked_deposit - cost)
-                # 현금(주문가능/총예수금)을 체결 즉시 반영해 UI/알림 불일치를 막습니다.
-                self.orderable_amount = max(0, (self.orderable_amount if self.orderable_amount > 0 else self.deposit) - cost)
+                # [Fix v9.1] 매수 체결: TR 원본값(_orderable_from_tr)에서 체결금액 차감
+                #   _sync_routine에서 orderable = _orderable_from_tr - locked 으로 재계산하므로
+                #   orderable_amount를 직접 차감하면 이중 차감됨.
+                #   대신 TR 원본값을 차감하여 다음 TR 갱신까지 정합성 유지.
+                if hasattr(self, '_orderable_from_tr'):
+                    self._orderable_from_tr = max(0, self._orderable_from_tr - cost)
+                self.orderable_amount = max(0, self._orderable_from_tr - self.locked_deposit) if hasattr(self, '_orderable_from_tr') and self._orderable_from_tr > 0 else max(0, self.orderable_amount)
                 self.deposit_total = max(0, (self.deposit_total if self.deposit_total > 0 else self.deposit) - cost)
-                self.withdrawable_amount = max(0, (self.withdrawable_amount if self.withdrawable_amount > 0 else self.deposit) - cost)
-                self.deposit = self.orderable_amount
+                self.deposit = max(0, self.deposit - cost)
                 self.db.log_trade("매수", p.get('cond_name', ''), p['name'], code, exec_price, exec_qty, 0,
                     commission=int(exec_price * exec_qty * (MOCK_FEE_RATE if self.is_mock else COMMISSION_RATE)),
                     tax=0, order_type=self.config_mgr.get("order_type", "03"), is_mock=self.is_mock)
@@ -2340,14 +2384,15 @@ class TradingEngine(QMainWindow):
                 realized = calc_sell_cost(p['buy_price'], exec_price, exec_qty, self.is_mock)
                 self.today_realized_profit += realized
 
-                # [Fix] 매도 체결 시 예수금 + 주문가능금액 복구
-                # 매수 시: orderable_amount/deposit 차감
-                # 매도 시: 원금(buy_price*qty) + 순손익(realized) 복구
+                # [Fix v9.1] 매도 체결 시 예수금 + 주문가능금액 복구
+                # _orderable_from_tr도 복구하여 sync에서 재계산 시 정합성 유지
                 try:
                     recovered = (p['buy_price'] * exec_qty) + realized
                     self.deposit = max(0, self.deposit + recovered)
-                    self.orderable_amount = max(0, self.orderable_amount + recovered)
                     self.deposit_total = max(0, self.deposit_total + recovered)
+                    if hasattr(self, '_orderable_from_tr'):
+                        self._orderable_from_tr = max(0, self._orderable_from_tr + recovered)
+                    self.orderable_amount = max(0, self._orderable_from_tr - self.locked_deposit) if hasattr(self, '_orderable_from_tr') and self._orderable_from_tr > 0 else max(0, self.orderable_amount + recovered)
                     self.withdrawable_amount = max(0, self.withdrawable_amount + recovered)
                 except Exception:
                     pass
