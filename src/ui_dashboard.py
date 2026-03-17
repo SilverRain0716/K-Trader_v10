@@ -241,7 +241,15 @@ class ConditionParamDialog(QDialog):
         layout = QVBoxLayout(self)
 
         # 현재 오버라이드 값 로드
-        cp = config_mgr.get("condition_params", {}).get(cond_name, {})
+        # [Fix v9.1] 글로벌과 동일한 기존 오버라이드는 무시 → 항상 글로벌 최신값 반영
+        raw_cp = config_mgr.get("condition_params", {}).get(cond_name, {})
+        cp = {}
+        for k, v in raw_cp.items():
+            global_val = config_mgr.get(k)
+            if global_val is not None and v != global_val:
+                cp[k] = v  # 글로벌과 다른 값만 유지
+            elif global_val is None:
+                cp[k] = v
 
         # ── 매매 파라미터 ──
         grp1 = QGroupBox("📈 매매 파라미터")
@@ -2194,6 +2202,16 @@ class TradingUI(QMainWindow):
             "tick_monitor_buy_ratio":    self.tick_buy_ratio_spin.value(),
             # 계좌는 secrets.json의 target_account를 단일 진실의 원천으로 사용 (config 저장 불필요)
         }
+        # [Fix v9.1] 글로벌 설정 변경 시, 기존 조건식별 오버라이드에서 글로벌과 동일해진 값 제거
+        existing_cp = config.get("condition_params", {})
+        if existing_cp:
+            for cond_name, cond_params in list(existing_cp.items()):
+                cleaned = {k: v for k, v in cond_params.items()
+                           if config.get(k) is None or v != config.get(k)}
+                if cleaned:
+                    existing_cp[cond_name] = cleaned
+                else:
+                    del existing_cp[cond_name]
         self.config_mgr.save(config)
 
     def _on_condition_item_changed(self, item):
