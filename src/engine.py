@@ -295,12 +295,10 @@ class TickMonitor:
                 self.unwatch(code, "감시 타임아웃")
                 return {"action": "EXPIRE", "code": code}
 
-        if s["phase"] == self.PHASE_DIP_WAIT:
-            dip_timeout = self._get_param(s["cond_name"], "dip_timeout_sec") or 60
-            if now - s["buy1_ts"] > dip_timeout:
-                self._log(f"[틱감시] ⏰ {s['name']}({code}) 눌림 타임아웃 ({dip_timeout}초) → 2차 매수 취소")
-                s["phase"] = self.PHASE_DONE
-                return {"action": "DIP_TIMEOUT", "code": code}
+        # [Fix v9.1] DIP_WAIT 타임아웃 제거
+        # 기존: dip_timeout_sec 후 2차 매수 자동 취소
+        # 변경: 1차 매수 후 매도될 때까지 2차 매수 기회 유지
+        #       매도(익절/손절/TS) 발생 시 엔진에서 unwatch 호출로 정리
 
         # ── PHASE_WATCHING: 대량 매수 카운팅 ──
         if s["phase"] == self.PHASE_WATCHING:
@@ -411,10 +409,8 @@ class TickMonitor:
                 expire = self._get_param(s["cond_name"], "expire_sec") or 180
                 if now - s["start_ts"] > expire:
                     expired.append(code)
-            elif s["phase"] == self.PHASE_DIP_WAIT:
-                dip_timeout = self._get_param(s["cond_name"], "dip_timeout_sec") or 60
-                if now - s["buy1_ts"] > dip_timeout:
-                    expired.append(code)
+            # [Fix v9.1] DIP_WAIT 타임아웃 제거 — 매도 시에만 정리
+            # elif s["phase"] == self.PHASE_DIP_WAIT: (제거됨)
         for code in expired:
             self.unwatch(code, "주기적 정리 (타임아웃)")
         return expired
@@ -2421,6 +2417,12 @@ class TradingEngine(QMainWindow):
                     stock_name = p.get('name', code)
                     sell_reason = p.get('_last_sell_reason', '매도완료')
                     is_loss = '손절' in sell_reason
+
+                    # [Fix v9.1] 매도 완료 → 틱감시 DIP_WAIT 정리
+                    # 1차 매수 후 익절/손절/TS로 매도되면 2차 매수 기회 소멸
+                    if self.tick_monitor.is_watching(code) or code in self.tick_monitor._watched:
+                        self.tick_monitor.unwatch(code, f"매도완료({sell_reason})")
+                        logger.info(f"🧹 [틱감시] {stock_name}({code}) 매도 완료 → 2차 매수 대기 해제")
 
                     # [v9.0] 당일 매매 완료 종목 기록 (모든 모드에서 UI 표시용)
                     self._traded_today[code] = {

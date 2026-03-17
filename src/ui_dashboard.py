@@ -1238,7 +1238,18 @@ class TradingUI(QMainWindow):
             cfg = self.config_mgr.config
             if "condition_params" not in cfg:
                 cfg["condition_params"] = {}
-            cfg["condition_params"][cond_name] = params
+            # [Fix v9.1] 글로벌과 동일한 값은 저장하지 않음 → 글로벌 변경 시 자동 추종
+            filtered = {}
+            for k, v in params.items():
+                global_val = cfg.get(k)
+                if global_val is not None and v != global_val:
+                    filtered[k] = v
+                elif global_val is None:
+                    filtered[k] = v
+            cfg["condition_params"][cond_name] = filtered
+            # 빈 dict면 아예 삭제
+            if not filtered:
+                cfg["condition_params"].pop(cond_name, None)
             self.config_mgr.save(cfg)
             try:
                 self.ipc_server.send_command("APPLY_SETTINGS", json.dumps(cfg, ensure_ascii=False))
