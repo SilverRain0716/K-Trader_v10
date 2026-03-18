@@ -290,8 +290,8 @@ class ConditionParamDialog(QDialog):
         grp1.setLayout(g1)
         layout.addWidget(grp1)
 
-        # ── 틱 감시 파라미터 ──
-        grp2 = QGroupBox("👁️ 틱 감시 오버라이드")
+        # ── SmartMoney 파라미터 ──
+        grp2 = QGroupBox("🧠 SmartMoney 오버라이드")
         g2 = QGridLayout()
 
         g2.addWidget(QLabel("틱감시 ON"), 0, 0)
