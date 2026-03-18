@@ -50,6 +50,9 @@ DATA_DIR   = os.path.join(_APP_DIR, "data")
 LOGS_DIR   = os.path.join(_APP_DIR, "logs")
 REPORTS_DIR = os.path.join(_APP_DIR, "reports")
 
+# [v10.0] SmartMoney 신호 패널 표시 상수 (engine.py와 동기화)
+MIN_TICKS_FOR_SIGNAL = 10
+
 for d in [CONFIG_DIR, DATA_DIR, LOGS_DIR, REPORTS_DIR]:
     os.makedirs(d, exist_ok=True)
 
@@ -1063,34 +1066,58 @@ class TradingUI(QMainWindow):
 
     # ── [v9.0] 틱 감시 모니터 UI 업데이트 ─────────────────
     def _update_tick_monitor_tab(self, state: dict):
-        """틱 감시 테이블 + 로그 업데이트."""
+        """[v10.0] SmartMoney 신호 패널 업데이트."""
         watched = state.get("tick_monitor_watched", {})
         tick_log = state.get("tick_monitor_log", [])
+        signals = state.get("smartmoney_signals", {})
 
-        # 테이블 갱신
-        self.tick_table.setRowCount(len(watched))
-        for row, (code, info) in enumerate(watched.items()):
-            phase = info.get("phase", "")
-            hit = info.get("hit_count", 0)
-            req = info.get("required_count", 4)
-            threshold = info.get("threshold", 30_000_000)
-            phase_text = {"WATCHING": "👁️ 감시중", "DIP_WAIT": "📉 눌림대기", "DONE": "✅ 완료"}.get(phase, phase)
+        # ── 신호 테이블 갱신 ──
+        # signals 데이터가 있으면 사용, 없으면 watched 폴백
+        display_data = signals if signals else watched
+        self.tick_table.setRowCount(len(display_data))
 
-            # 신호 발생(4/4) 시 색상 강조
-            if hit >= req:
-                count_text = f"🚨 {hit}/{req}"
-                count_color = COLORS.get('profit_green', '#34d399')
+        for row, (code, info) in enumerate(display_data.items()):
+            sig = info.get("signal", "NEUTRAL")
+            score = info.get("score", 0)
+            tick_cnt = info.get("tick_count", 0)
+            warmed = info.get("warmed_up", False)
+            baseline = info.get("baseline_net", 0)
+            bl_set = info.get("baseline_set", False)
+
+            # 신호 등급 → 이모지 + 색상
+            sig_map = {
+                "BUY_A":   ("🟢 BUY_A",  COLORS.get('profit_green', '#00d68f')),
+                "BUY_B":   ("🟡 BUY_B",  COLORS.get('warning_orange', '#ffb347')),
+                "DANGER":  ("🔴 DANGER", COLORS.get('profit_red', '#ff6b6b')),
+                "NEUTRAL": ("⚪ 대기",    COLORS.get('text_primary', '#e2eaf5')),
+            }
+            sig_text, sig_color = sig_map.get(sig, ("⚪ 대기", COLORS.get('text_primary', '#e2eaf5')))
+
+            # 스코어 → 색상 (양수=녹색, 음수=적색, 0근처=회색)
+            if score >= 0.3:
+                score_color = COLORS.get('profit_green', '#00d68f')
+            elif score <= -0.2:
+                score_color = COLORS.get('profit_red', '#ff6b6b')
             else:
-                count_text = f"{hit}/{req}"
-                count_color = COLORS.get('text_primary', '#e2e8f0')
+                score_color = COLORS.get('text_primary', '#e2eaf5')
+
+            # baseline 표시
+            if bl_set:
+                bl_text = f"{baseline / 10000:+,.0f}만"
+            else:
+                bl_text = "대기중"
+
+            # 워밍업 표시
+            status_text = f"틱 {tick_cnt}" if warmed else f"워밍업 {tick_cnt}/{MIN_TICKS_FOR_SIGNAL}"
 
             items_data = [
                 (info.get("name", ""), None),
                 (code, None),
                 (info.get("cond_name", ""), None),
-                (phase_text, COLORS.get('warning_orange', '#ff9800') if phase == "DIP_WAIT" else None),
-                (count_text, count_color),
-                (f"{threshold/10000:.0f}만원/{info.get('window_sec', 2)}초", None),
+                (sig_text, sig_color),
+                (f"{score:+.3f}", score_color),
+                (bl_text, None),
+                (status_text, COLORS.get('text_secondary', '#94a3b8') if not warmed else None),
             ]
             for col, (text, color) in enumerate(items_data):
                 item = QTableWidgetItem(str(text))
@@ -1100,18 +1127,18 @@ class TradingUI(QMainWindow):
                     item.setFont(QFont("Malgun Gothic", 10, QFont.Bold))
                 self.tick_table.setItem(row, col, item)
 
-        active_count = len([c for c, s in watched.items() if s.get("phase") != "DONE"])
-        self.tick_count_label.setText(f"감시 {active_count}종목 / 최대 {self.config_mgr.get('tick_monitor_max_watch', 15)}개")
+        active_count = len(display_data)
+        self.tick_count_label.setText(
+            f"추적 {active_count}종목 / 최대 {self.config_mgr.get('tick_monitor_max_watch', 15)}개"
+        )
 
-        # 로그 갱신 (새 항목만 추가)
+        # ── 로그 갱신 ──
         prev_log_count = getattr(self, '_tick_log_count', 0)
         if len(tick_log) != prev_log_count:
             self._tick_log_count = len(tick_log)
-            # 최신 50건만 표시
             display_log = tick_log[-50:]
             lines = [f"[{entry.get('time', '')}] {entry.get('msg', '')}" for entry in display_log]
             self.tick_log_window.setPlainText("\n".join(lines))
-            # 스크롤을 맨 아래로
             sb = self.tick_log_window.verticalScrollBar()
             sb.setValue(sb.maximum())
 
@@ -1815,7 +1842,7 @@ class TradingUI(QMainWindow):
         div_tick = QFrame(); div_tick.setObjectName("section_divider"); div_tick.setFrameShape(QFrame.HLine)
         s3.addWidget(div_tick, 5, 0, 1, 6)
 
-        self.tick_monitor_cb = ToggleSwitch("👁️ 틱감시")
+        self.tick_monitor_cb = ToggleSwitch("🧠 SM추적")
         self.tick_monitor_cb.setMinimumWidth(110)
         self.tick_monitor_cb.setToolTip(
             "ON: 조건식 편입 종목에 대해 대량매수 감지 후 매수 (세력 진입 포착)\n"
@@ -2056,30 +2083,30 @@ class TradingUI(QMainWindow):
         bl_tab.setLayout(bl_layout)
         self.tabs.addTab(bl_tab, "🚫 블랙리스트")
 
-        # ── [v9.0] 👁️ 틱 감시 모니터 탭 ──
+        # ── [v10.0] 🧠 SmartMoney 신호 모니터 탭 ──
         tick_tab = QWidget()
         tick_layout = QVBoxLayout()
 
         tick_header = QHBoxLayout()
-        self.tick_count_label = QLabel("감시 0종목")
+        self.tick_count_label = QLabel("추적 0종목")
         self.tick_count_label.setStyleSheet("font-weight: bold; font-size: 12px;")
         tick_header.addWidget(self.tick_count_label)
         tick_header.addStretch()
         tick_layout.addLayout(tick_header)
 
-        # 감시 종목 테이블
-        self.tick_table = QTableWidget(0, 6)
+        # 신호 종목 테이블 (7컬럼: 종목명, 코드, 조건식, 신호등급, 스코어, 프로그램닻, 상태)
+        self.tick_table = QTableWidget(0, 7)
         self.tick_table.setHorizontalHeaderLabels(
-            ["종목명", "종목코드", "조건식", "상태", "체결 카운트", "임계값"]
+            ["종목명", "종목코드", "조건식", "신호등급", "스코어", "프로그램닻", "상태"]
         )
         self.tick_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self.tick_table.setAlternatingRowColors(True)
         self.tick_table.verticalHeader().setVisible(False)
-        self.tick_table.setMaximumHeight(200)
+        self.tick_table.setMaximumHeight(220)
         tick_layout.addWidget(self.tick_table)
 
-        # 틱 감시 로그
-        tick_log_label = QLabel("📋 틱 감시 로그")
+        # SmartMoney 로그
+        tick_log_label = QLabel("📋 SmartMoney 추적 로그")
         tick_log_label.setStyleSheet("font-weight: bold; margin-top: 6px;")
         tick_layout.addWidget(tick_log_label)
         self.tick_log_window = QTextEdit()
@@ -2089,7 +2116,7 @@ class TradingUI(QMainWindow):
         tick_layout.addWidget(self.tick_log_window, stretch=1)
 
         tick_tab.setLayout(tick_layout)
-        self.tabs.addTab(tick_tab, "👁️ 틱감시")
+        self.tabs.addTab(tick_tab, "🧠 SM신호")
 
         stats_tab = QWidget()
         stats_layout = QVBoxLayout()
@@ -2276,14 +2303,14 @@ class TradingUI(QMainWindow):
             "index_filter_enabled": "지수필터",
             "index_filter_threshold": "지수필터 임계값",
             "index_filter_target": "지수필터 대상",
-            "tick_monitor_enabled": "틱감시",
-            "tick_monitor_threshold": "틱감시 체결금액",
-            "tick_monitor_count": "틱감시 횟수",
-            "tick_monitor_window_sec": "틱감시 시간창",
-            "tick_monitor_dip_pct": "틱감시 눌림%",
-            "tick_monitor_max_watch": "틱감시 감시한도",
-            "tick_monitor_expire_sec": "틱감시 타임아웃",
-            "tick_monitor_buy_ratio": "틱감시 1차비중",
+            "tick_monitor_enabled": "SM추적",
+            "tick_monitor_threshold": "SM 체결금액",
+            "tick_monitor_count": "SM 횟수",
+            "tick_monitor_window_sec": "SM 시간창",
+            "tick_monitor_dip_pct": "SM 눌림%",
+            "tick_monitor_max_watch": "SM 감시한도",
+            "tick_monitor_expire_sec": "SM 타임아웃",
+            "tick_monitor_buy_ratio": "SM 1차비중",
         }
         changed_lines = []
         for k, label in label_map.items():
