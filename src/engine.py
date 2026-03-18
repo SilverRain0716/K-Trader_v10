@@ -471,6 +471,7 @@ class SmartMoneyTracker:
             # else: DANGER 유지
         elif self._score <= THRESH_DANGER_ENTER:
             self._signal = "DANGER"
+            self._on_signal_change(prev_signal, "DANGER")
             return  # DANGER는 즉시 확정, BUY 판정 불필요
 
         # BUY_A 판정
@@ -480,6 +481,7 @@ class SmartMoneyTracker:
             # else: BUY_A 유지
         elif self._score >= THRESH_BUY_A_ENTER:
             self._signal = "BUY_A"
+            self._on_signal_change(prev_signal, "BUY_A")
             return
 
         # BUY_B 판정 (baseline < 0인 '숨은 주포' 케이스)
@@ -491,11 +493,48 @@ class SmartMoneyTracker:
             # BUY_B 추가 필터: 가격 방어 + 대량 매수 비율 확인
             if self._check_buyb_filters():
                 self._signal = "BUY_B"
+                self._on_signal_change(prev_signal, "BUY_B")
                 return
 
         # 나머지 → NEUTRAL
         if self._signal not in ("BUY_A", "BUY_B", "DANGER"):
             self._signal = "NEUTRAL"
+
+        # 신호 변경 감지 (NEUTRAL 전환 포함)
+        if self._signal != prev_signal:
+            self._on_signal_change(prev_signal, self._signal)
+
+    # ── 신호 변경 이벤트 (백테스트용 로깅) ────────────────────
+    def _on_signal_change(self, old_signal: str, new_signal: str):
+        """
+        신호 등급 변경 시 호출. 백테스트 분석을 위한 이벤트 기록.
+
+        signal_history에 (timestamp, old, new, score, 지표스냅샷)을 저장합니다.
+        SmartMoneyManager._log()는 외부에서 호출해야 하므로,
+        여기서는 내부 히스토리만 축적합니다.
+        """
+        now = time.time()
+        last_price = self._tick_buffer[-1][1] if self._tick_buffer else 0
+        snapshot = {
+            "ts": now,
+            "old": old_signal,
+            "new": new_signal,
+            "score": round(self._score, 4),
+            "price": last_price,
+            "tick_count": self._tick_count,
+            "baseline_net": self._baseline_net,
+            "consec_big_buy": self._consec_big_buy,
+            "consec_big_sell": self._consec_big_sell,
+            "twap_hits": self._twap_hits,
+            "avg_sweep": (round(sum(self._sweep_buffer) / len(self._sweep_buffer), 4)
+                          if self._sweep_buffer else 0),
+        }
+        if not hasattr(self, '_signal_history'):
+            self._signal_history = []
+        self._signal_history.append(snapshot)
+        # 최근 100건만 유지 (메모리 절약)
+        if len(self._signal_history) > 100:
+            self._signal_history = self._signal_history[-100:]
 
     # ── BUY_B 추가 필터 ─────────────────────────────────────
     def _check_buyb_filters(self) -> bool:
@@ -550,6 +589,8 @@ class SmartMoneyTracker:
             "twap_hits": self._twap_hits,
             "avg_sweep": (round(sum(self._sweep_buffer) / len(self._sweep_buffer), 4)
                           if self._sweep_buffer else 0),
+            # [v10.0] 백테스트용 신호 변경 이력 (최근 10건만 전달, IPC 부하 제한)
+            "signal_history": (getattr(self, '_signal_history', [])[-10:]),
         }
 
 
@@ -2087,7 +2128,28 @@ class TradingEngine(QMainWindow):
                     tick_vol = abs(tick_vol_raw)
 
                     if tick_price > 0 and tick_vol > 0:
+                        prev_sig = tracker.signal
                         tracker.on_tick(tick_price, tick_vol, is_buy_tick)
+                        new_sig = tracker.signal
+
+                        # [v10.0] 신호 변경 시 로그 기록 (백테스트용)
+                        if new_sig != prev_sig:
+                            self.tick_monitor._log(
+                                f"[SM] 🔔 {tracker.name}({code}) "
+                                f"신호변경 {prev_sig}→{new_sig} "
+                                f"(score={tracker.signal_strength:+.3f}, "
+                                f"price={tick_price:,}, ticks={tracker.tick_count})"
+                            )
+                            # DB 기록 (condition_log 테이블 활용)
+                            try:
+                                self.db.log_condition_signal(
+                                    code, tracker.name, tracker.cond_name,
+                                    f"SM:{new_sig}",
+                                    f"score={tracker.signal_strength:+.3f} "
+                                    f"prev={prev_sig} price={tick_price:,}"
+                                )
+                            except Exception:
+                                pass
 
                         # ── should_buy(): 3중 자물쇠 판정 ──
                         sig = tracker.signal
@@ -2288,6 +2350,43 @@ class TradingEngine(QMainWindow):
                         )
                         self._execute_danger_sell(code, "🚨 DANGER (수급붕괴)", sellable)
                         return  # DANGER 발동 시 나머지 매도 로직 스킵
+
+            # [v10.0] ═══ Gate 3: 동적 타임컷 — 진입 후 N초 경과 시 매도 ═══
+            # SM 매수 종목에만 적용 (종가배팅 등 비SM 종목은 해당 없음)
+            # score가 진입 시점보다 개선 중이면 최대 300초까지 연장
+            if not data.get('is_manual') and data.get('_smartmoney_buy'):
+                entry_ts = data.get('_smartmoney_entry_ts', 0)
+                if entry_ts > 0:
+                    elapsed = time.time() - entry_ts
+                    base_timeout = 180  # 기본 타임컷 (초)
+                    max_timeout = 300   # 최대 연장 한계 (초)
+
+                    # 동적 연장 판정: SM tracker가 살아있고 score가 개선 중이면 연장
+                    extend = False
+                    if self.tick_monitor.is_watching(code):
+                        tracker = self.tick_monitor.get_tracker(code)
+                        if tracker:
+                            entry_score = data.get('_smartmoney_entry_score', 0)
+                            current_score = tracker.signal_strength
+                            # 진입 시점 대비 score가 +0.1 이상 개선 → 연장
+                            if current_score > entry_score + 0.1:
+                                extend = True
+
+                    effective_timeout = max_timeout if extend else base_timeout
+
+                    if elapsed > effective_timeout:
+                        sellable = data['qty'] - self._pending_sell_qty.get(code, 0)
+                        if sellable > 0 and not data.get('sell_ordered'):
+                            timeout_type = f"연장({max_timeout}초)" if extend else f"기본({base_timeout}초)"
+                            reason = f"⏰ 타임컷 {timeout_type}"
+                            data['sell_ordered'] = True
+                            data['_last_sell_reason'] = reason
+                            logger.info(
+                                f"⏰ [타임컷] {data.get('name', code)}({code}) "
+                                f"{elapsed:.0f}초 경과 → {reason}"
+                            )
+                            self._execute_sell(code, reason, sellable)
+                            return  # 타임컷 발동 시 나머지 매도 로직 스킵
 
             # [v7.7] 분할매도 처리 — TS 연계형
             # [Fix v8.1] 가동 중 split_sell_enabled를 끈 경우, 기존 포트에 남아있는
