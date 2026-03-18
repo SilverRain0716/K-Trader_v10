@@ -2286,7 +2286,7 @@ class TradingEngine(QMainWindow):
                             f"[SM] 🚨 {data.get('name', code)}({code}) DANGER 매도! "
                             f"(score={tracker.signal_strength:+.3f})"
                         )
-                        self._execute_sell(code, "🚨 DANGER (수급붕괴)", sellable)
+                        self._execute_danger_sell(code, "🚨 DANGER (수급붕괴)", sellable)
                         return  # DANGER 발동 시 나머지 매도 로직 스킵
 
             # [v7.7] 분할매도 처리 — TS 연계형
@@ -2530,7 +2530,7 @@ class TradingEngine(QMainWindow):
             f"[SM] 🚨 {tracker.name}({code}) DANGER 선제 매도! "
             f"(score={tracker.signal_strength:+.3f})"
         )
-        self._execute_sell(code, "🚨 DANGER (수급붕괴)", sellable)
+        self._execute_danger_sell(code, "🚨 DANGER (수급붕괴)", sellable)
 
     def _check_split_buy(self, code, curr_p):
         """[v7.5] 분할매수: 가격 확인 후 추가 매수."""
@@ -2600,6 +2600,76 @@ class TradingEngine(QMainWindow):
             hoga_gb=self.config_mgr.get("order_type", "03"), org_order_no=""
         )
         self._pending_sell_qty[code] = self._pending_sell_qty.get(code, 0) + qty
+
+    def _execute_danger_sell(self, code, reason, qty):
+        """
+        [v10.0] DANGER 전용 2단계 매도.
+
+        1단계: 최유리지정가(06)로 매도 주문 → 슬리피지 최소화
+        2단계: 5초 후 미체결 잔량이 있으면 시장가(03)로 정정 → 확실한 탈출
+
+        일반 _execute_sell과의 차이:
+          - 호가 구분을 글로벌 설정 무시하고 강제로 "06" 사용
+          - 5초 후 미체결 체크 타이머 등록
+        """
+        self.portfolio[code]['status'] = 'SELL_REQ'
+        p = self.portfolio[code]
+        curr_p = p.get('current_price', 0)
+        buy_p = p.get('buy_price', 0)
+        pct = self._net_yield(buy_p, curr_p, qty)
+
+        logger.info(
+            f"📤 [DANGER매도] {p.get('name','')}({code}) {reason} | "
+            f"{qty}주 | 현재={curr_p:,} ({pct:+.2f}%) → 1단계: 최유리지정가(06)"
+        )
+
+        # 1단계: 최유리지정가(06)
+        order_screen = self._next_tr_screen()
+        self.tr_scheduler.request_order(
+            rqname="DANGER매도", screen_no=order_screen, acc_no=self.account,
+            order_type=2, code=code, qty=qty, price=0,
+            hoga_gb="06", org_order_no=""  # 강제 최유리지정가
+        )
+        self._pending_sell_qty[code] = self._pending_sell_qty.get(code, 0) + qty
+
+        # 2단계: 5초 후 미체결 잔량 확인 → 시장가(03) 정정
+        danger_ts = time.time()
+        self.portfolio[code]['_danger_sell_ts'] = danger_ts
+        self.portfolio[code]['_danger_sell_qty'] = qty
+
+        def _check_danger_unfilled():
+            """5초 후 DANGER 미체결 잔량 확인 → 시장가 정정."""
+            try:
+                if code not in self.portfolio:
+                    return  # 이미 전량 매도 완료
+                p = self.portfolio[code]
+                # 타임스탬프로 이 타이머가 유효한지 확인 (중복 방지)
+                if p.get('_danger_sell_ts') != danger_ts:
+                    return
+                remaining = p.get('qty', 0)
+                if remaining <= 0:
+                    return  # 전량 체결 완료
+
+                # 미체결 잔량 → 시장가(03) 정정 매도
+                pending = self._pending_sell_qty.get(code, 0)
+                unfilled = remaining - pending  # 이미 pending에 없는 잔량
+                if unfilled <= 0:
+                    unfilled = remaining  # pending이 꼬인 경우 안전장치
+
+                logger.warning(
+                    f"⚠️ [DANGER 2단계] {p.get('name','')}({code}) "
+                    f"5초 경과 미체결 {remaining}주 → 시장가(03) 정정"
+                )
+                self.tr_scheduler.request_order(
+                    rqname="DANGER시장가", screen_no=self._next_tr_screen(),
+                    acc_no=self.account, order_type=2, code=code,
+                    qty=remaining, price=0,
+                    hoga_gb="03", org_order_no=""  # 강제 시장가
+                )
+            except Exception as e:
+                logger.error(f"❌ [DANGER 2단계] {code} 정정 오류: {e}")
+
+        QTimer.singleShot(5000, _check_danger_unfilled)
 
     def _on_chejan(self, gubun, item_cnt, fid_list):
         if gubun != "0":
