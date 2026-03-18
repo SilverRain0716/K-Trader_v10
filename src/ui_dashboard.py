@@ -1120,12 +1120,22 @@ class TradingUI(QMainWindow):
                 (status_text, COLORS.get('text_secondary', '#94a3b8') if not warmed else None),
             ]
             for col, (text, color) in enumerate(items_data):
-                item = QTableWidgetItem(str(text))
-                item.setTextAlignment(Qt.AlignCenter)
+                # [v10.0 Perf] Object Pooling — 기존 QTableWidgetItem 재활용
+                # 500ms마다 갱신되는 테이블에서 매번 객체를 새로 생성하면
+                # 하루 5만회+ GC 부하가 발생합니다. 기존 item이 있으면 재사용합니다.
+                item = self.tick_table.item(row, col)
+                if item is None:
+                    item = QTableWidgetItem(str(text))
+                    item.setTextAlignment(Qt.AlignCenter)
+                    self.tick_table.setItem(row, col, item)
+                else:
+                    item.setText(str(text))
                 if color:
                     item.setForeground(QBrush(QColor(color)))
                     item.setFont(QFont("Malgun Gothic", 10, QFont.Bold))
-                self.tick_table.setItem(row, col, item)
+                else:
+                    item.setForeground(QBrush(QColor(COLORS.get('text_primary', '#e2eaf5'))))
+                    item.setFont(QFont("Malgun Gothic", 10, QFont.Normal))
 
         active_count = len(display_data)
         self.tick_count_label.setText(
@@ -2451,7 +2461,7 @@ class TradingUI(QMainWindow):
                 self.invest_spin.setValue(1000000)
 
     def _export_excel(self):
-        """매매 기록 엑셀 내보내기."""
+        """[v10.0 Perf] 매매 기록 엑셀 내보내기 — 백그라운드 스레드로 UI 블로킹 방지."""
         from PyQt5.QtWidgets import QFileDialog, QMessageBox
         import os
         default_name = f"K-Trader_매매기록_{datetime.datetime.now().strftime('%Y%m%d')}.xlsx"
@@ -2459,7 +2469,32 @@ class TradingUI(QMainWindow):
         path, _ = QFileDialog.getSaveFileName(self, "엑셀 파일 저장", default_path, "Excel Files (*.xlsx)")
         if not path:
             return
-        ok = self.db.export_to_excel(path, days=365)
+
+        # 버튼 비활성화 + 상태 표시
+        sender = self.sender()
+        if sender:
+            sender.setEnabled(False)
+            sender.setText("⏳ 저장 중...")
+
+        def _worker():
+            """백그라운드 스레드에서 엑셀 저장."""
+            try:
+                ok = self.db.export_to_excel(path, days=365)
+            except Exception:
+                ok = False
+            # UI 갱신은 메인 스레드에서 실행해야 하므로 QTimer.singleShot 사용
+            from PyQt5.QtCore import QMetaObject, Qt as QtConst, Q_ARG
+            QTimer.singleShot(0, lambda: self._on_export_done(ok, path, sender))
+
+        t = threading.Thread(target=_worker, daemon=True)
+        t.start()
+
+    def _on_export_done(self, ok: bool, path: str, sender_btn):
+        """엑셀 내보내기 완료 후 UI 갱신 (메인 스레드에서 실행)."""
+        from PyQt5.QtWidgets import QMessageBox
+        if sender_btn:
+            sender_btn.setEnabled(True)
+            sender_btn.setText("📊 엑셀 내보내기")
         if ok:
             QMessageBox.information(self, "내보내기 완료", f"저장 완료:\n{path}")
         else:
