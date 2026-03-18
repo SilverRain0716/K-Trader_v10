@@ -661,20 +661,29 @@ class SmartMoneyManager:
         return list(self._tick_log)
 
     # ── 타임아웃 정리 (엔진 sync에서 호출) ────────────────────
-    def cleanup_expired(self) -> list:
+    def cleanup_expired(self, protected_codes: set = None) -> list:
         """
         감시 타임아웃된 종목 정리. 해제된 코드 리스트 반환.
+
+        Args:
+            protected_codes: 보호 코드 집합 (portfolio 보유 종목).
+                             이 종목들은 타임아웃이어도 tracker를 유지합니다.
 
         Returns:
             list: 타임아웃으로 해제된 종목코드 리스트
         """
+        if protected_codes is None:
+            protected_codes = set()
         expired = []
         now = time.time()
         expire_sec = self.config_mgr.get("tick_monitor_expire_sec", SIGNAL_EXPIRE_SEC)
         for code, t in list(self._trackers.items()):
             if now - t._start_ts > expire_sec:
-                # 이미 매수 신호가 발생했으면 (BUY_A/BUY_B) 타임아웃 면제
+                # 매수 신호 발생 중이면 타임아웃 면제
                 if t.signal in ("BUY_A", "BUY_B"):
+                    continue
+                # 보유 중인 종목은 타임아웃 면제 (DANGER 감시 유지)
+                if code in protected_codes:
                     continue
                 expired.append(code)
         for code in expired:
@@ -1217,17 +1226,22 @@ class TradingEngine(QMainWindow):
             self.kiwoom.dynamicCall("SetRealRemove(QString, QString)", info.get('screen_no', 'ALL'), code)
             del self._pending_buy[code]
 
-        # [v9.0] 틱 감시 타임아웃 정리 (틱이 안 오는 종목 안전망)
+        # [v10.0] SmartMoney 타임아웃 정리 (틱이 안 오는 종목 안전망)
         try:
-            expired_codes = self.tick_monitor.cleanup_expired()
+            expired_codes = self.tick_monitor.cleanup_expired(
+                protected_codes=set(self.portfolio.keys())
+            )
             for code in expired_codes:
-                # 실시간 구독 해제
-                try:
-                    self.kiwoom.dynamicCall("SetRealRemove(QString, QString)", "ALL", code)
-                except Exception:
-                    pass
+                # [v10.0 Fix] 보유 중인 종목은 실시간 구독 해제 금지!
+                # SM 타임아웃이어도 portfolio에 있으면 시세 구독은 유지해야
+                # TS/손절/가격갱신이 정상 동작합니다.
+                if code not in self.portfolio:
+                    try:
+                        self.kiwoom.dynamicCall("SetRealRemove(QString, QString)", "ALL", code)
+                    except Exception:
+                        pass
         except Exception as e:
-            logger.error(f"❌ [틱감시] 타임아웃 정리 오류: {e}")
+            logger.error(f"❌ [SM] 타임아웃 정리 오류: {e}")
 
         # [Fix v9.1] BUY_REQ 유령 항목 정리
         # 매수 주문 발행 시 portfolio에 qty=0, status='BUY_REQ'로 등록하는데,
