@@ -2157,7 +2157,11 @@ class TradingEngine(QMainWindow):
             return
 
         # [v8.0] 지수 필터
-        if not self._is_index_ok():
+        # [v10.1] SM 모드에서는 지수필터가 watch 등록을 차단하지 않음
+        # → 감시는 열어두되 매수 시점에서 _handle_smartmoney_buy()가 재검사 (C2)
+        tick_mon_enabled = self.config_mgr.get_condition_param(cond_name, "tick_monitor_enabled")
+        if not self._is_index_ok() and not tick_mon_enabled:
+            # 비SM 모드(즉시매수)에서만 지수필터로 차단
             cfg = self.config_mgr.config
             threshold = cfg.get("index_filter_threshold", -2.0)
             reason = (
@@ -2181,8 +2185,7 @@ class TradingEngine(QMainWindow):
         self.kiwoom.dynamicCall("SetRealReg(QString, QString, QString, QString)",
                                 self._pending_buy[code]['screen_no'], code, "10;13;15;71", "1")
 
-        # [v10.0] SmartMoney 모드 분기: 조건식별 tick_monitor 설정 확인
-        tick_mon_enabled = self.config_mgr.get_condition_param(cond_name, "tick_monitor_enabled")
+        # [v10.0] SmartMoney 모드 분기 (tick_mon_enabled는 위에서 이미 조회됨)
         if tick_mon_enabled:
             # SmartMoney 모드: 추적기 생성, 신호 발생까지 매수 보류
             screen_no = self._pending_buy[code]['screen_no']
