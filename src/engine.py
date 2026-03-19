@@ -983,9 +983,14 @@ class TradingEngine(QMainWindow):
         self.kiwoom.OnReceiveTrData.connect(self._on_tr_data)
         self.kiwoom.OnReceiveConditionVer.connect(self._on_condition_ver)
         self.kiwoom.OnReceiveRealCondition.connect(self._on_real_condition)
+
+        # TradingEngine.__init__ 내부 이벤트 연결 부분에 추가
+        self.kiwoom.OnReceiveTrCondition.connect(self._on_receive_tr_condition)
+      
         self.kiwoom.OnReceiveRealData.connect(self._on_real_data)
         self.kiwoom.OnReceiveChejanData.connect(self._on_chejan)
 
+    
         # 타이머 설정
         self.sync_timer = QTimer(self)
         self.sync_timer.timeout.connect(self._sync_routine)
