@@ -246,7 +246,7 @@ DEFAULT_CONFIG = {
     "tick_monitor_dip_pct": -0.5,            # 눌림 판정 하락률 (1차 매수가 대비, %)
     "tick_monitor_dip_rebuy_count": 1,       # 눌림 중 대량 매수 재출현 필요 횟수
     "tick_monitor_dip_timeout_sec": 60,      # 눌림 대기 타임아웃 (초)
-    "tick_monitor_expire_sec": 180,          # 조건식 편입 후 신호 미발생 시 감시 해제 (초) [v9.1] 120→180
+    "tick_monitor_expire_sec": 28800,          # 조건식 편입 후 신호 미발생 시 감시 해제 (초) [v9.1] 120→180
 }
 
 
