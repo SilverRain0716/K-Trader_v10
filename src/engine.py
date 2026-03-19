@@ -205,7 +205,7 @@ THRESH_DANGER_HOLD   = -0.15  # DANGER 해제 (v10.1: -0.20→-0.15 갭 확대)
 DANGER_COOLDOWN_SEC    = 5.0    # DANGER→NEUTRAL 후 재진입 차단 시간 (초)
 
 # ── [v10.1/H1] 매수 후 DANGER 면역기간 ───────────────────────
-DANGER_GRACE_SEC       = 10.0   # 매수 체결 후 DANGER 매도 억제 시간 (초)
+DANGER_GRACE_SEC       = 5.0    # 매수 체결 후 DANGER 매도 억제 시간 (초) — 손절(Gate1)은 무관
 
 # ── [v10.1/H3] 조건식 재편입 쿨다운 ──────────────────────────
 REENTRY_COOLDOWN_SEC   = 30.0   # 추적 해제 후 재편입 차단 시간 (초)
@@ -2285,8 +2285,15 @@ class TradingEngine(QMainWindow):
                     # [v10.1/M1] 첫 틱 수신 시 거래대금으로 Tier 보정
                     if tick_price > 0 and tracker.tick_count == 0:
                         try:
-                            cum_vol_krw = abs(safe_int(self.kiwoom.dynamicCall(
-                                "GetCommRealData(QString, int)", code, 14))) * 1_000_000  # 백만원 단위
+                            # [v10.1 Fix] FID 14(누적거래대금): 키움 API 기본 단위는 '원'
+                            # 단, 일부 환경에서 만원 단위로 오는 경우가 있으므로
+                            # sanity check: 값이 1억 미만이면 만원 단위로 간주하여 ×10,000 보정
+                            raw_vol = abs(safe_int(self.kiwoom.dynamicCall(
+                                "GetCommRealData(QString, int)", code, 14)))
+                            if 0 < raw_vol < 100_000_000:
+                                cum_vol_krw = raw_vol * 10_000  # 만원 단위 → 원
+                            else:
+                                cum_vol_krw = raw_vol  # 원 단위 그대로
                             if cum_vol_krw > 0:
                                 new_tier = self.tick_monitor._adjust_tier_by_volume(
                                     code, tracker.tier, cum_vol_krw)
@@ -2519,7 +2526,7 @@ class TradingEngine(QMainWindow):
                 tracker = self.tick_monitor.get_tracker(code)
                 if tracker and tracker.signal == "DANGER":
                     # [v10.1/H1] 매수 후 grace period 확인
-                    entry_ts = data.get('_smartmoney_entry_ts', 0)
+                    entry_ts = data.get('_smartmoney_entry_ts') or 0
                     grace_ok = entry_ts <= 0 or (time.time() - entry_ts) >= DANGER_GRACE_SEC
                     if grace_ok:
                         sellable = data['qty'] - self._pending_sell_qty.get(code, 0)
@@ -2539,7 +2546,7 @@ class TradingEngine(QMainWindow):
             # SM 매수 종목에만 적용 (종가배팅 등 비SM 종목은 해당 없음)
             # score가 진입 시점보다 개선 중이면 최대 300초까지 연장
             if not data.get('is_manual') and data.get('_smartmoney_buy'):
-                entry_ts = data.get('_smartmoney_entry_ts', 0)
+                entry_ts = data.get('_smartmoney_entry_ts') or 0
                 if entry_ts > 0:
                     elapsed = time.time() - entry_ts
                     base_timeout = 180  # 기본 타임컷 (초)
@@ -2688,7 +2695,7 @@ class TradingEngine(QMainWindow):
                         rqname="매수취소", screen_no=self._next_tr_screen(),
                         acc_no=self.account, order_type=3,
                         code=code, qty=info['qty'], price=0,
-                        hoga_gb="", org_order_no=order_no
+                        hoga_gb="00", org_order_no=order_no  # [v10.1 Fix] 취소 시 "00" 명시
                     )
                     logger.info(f"🚫 [C1] {code} 미체결 매수 취소 발행 (주문번호={order_no}, 잔량={info['qty']}주)")
                 except Exception as e:
@@ -2836,7 +2843,7 @@ class TradingEngine(QMainWindow):
 
         # [v10.1/H1] 매수 후 DANGER 면역기간 (grace period)
         # 손절(Gate 1)은 별도 경로이므로 여기서만 억제해도 안전
-        entry_ts = data.get('_smartmoney_entry_ts', 0)
+        entry_ts = data.get('_smartmoney_entry_ts') or 0
         if entry_ts > 0 and (time.time() - entry_ts) < DANGER_GRACE_SEC:
             return  # grace period 중 → DANGER 매도 억제
 
