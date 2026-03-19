@@ -2225,6 +2225,22 @@ class TradingEngine(QMainWindow):
             # 기존 즉시매수 모드
             logger.info(f"✅ [조건식] {stock_name}({code}) 편입 → 매수 대기열 등록 (조건식: {cond_name})")
             self._log_condition_signal(code, stock_name, cond_name, "⏳ 대기", "체결가 수신 대기 중")
+    
+# [v10.2 추가] 프로그램 재시작 시 기존 편입 종목 복구용
+    def _on_receive_tr_condition(self, screen_no, code_list, cond_name, cond_index, next_val):
+        if not code_list:
+            return
+
+        # 종목 코드 분리 (마지막 빈 값 제외)
+        codes = code_list.split(';')[:-1] 
+        logger.info(f"📥 [조건식] '{cond_name}' 초기 종목 {len(codes)}개 수신 완료")
+
+        for code in codes:
+            # 이미 포트폴리오에 있거나 매수 대기 중인 종목은 제외하고 신규 편입 처리
+            if code not in self.portfolio and code not in self._pending_buy:
+                # 실시간 편입('I') 이벤트와 동일한 로직으로 연결
+                self._on_real_condition(code, "I", cond_name, cond_index)
+
 
     def _on_real_data(self, code, real_type, real_data):
         # [v8.0] 지수 실시간 수신 (KOSPI/KOSDAQ) — 종목 처리와 완전히 분리
@@ -2277,7 +2293,7 @@ class TradingEngine(QMainWindow):
             except Exception as e:
                 logger.debug(f"[v8.0] 지수 데이터 파싱 오류 ({code}): {e}")
             return
-
+      
         # [v10.0] SmartMoney 추적 종목: 체결 틱 & 호가잔량 전달
         if self.tick_monitor.is_watching(code):
             tracker = self.tick_monitor.get_tracker(code)
