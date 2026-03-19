@@ -326,7 +326,7 @@ class ConditionParamDialog(QDialog):
         # [v9.1] 추가 파라미터
         g2.addWidget(QLabel("감시타임아웃"), 2, 2)
         self.tm_expire = QSpinBox()
-        self.tm_expire.setRange(30, 600); self.tm_expire.setSingleStep(30); self.tm_expire.setSuffix("초")
+        self.tm_expire.setRange(30, 28800); self.tm_expire.setSingleStep(30); self.tm_expire.setSuffix("초")
         self.tm_expire.setValue(cp.get("tick_monitor_expire_sec", config_mgr.get("tick_monitor_expire_sec", 180)))
         g2.addWidget(self.tm_expire, 2, 3)
 
@@ -1909,7 +1909,7 @@ class TradingUI(QMainWindow):
         lbl_tm_max = QLabel("감시한도"); lbl_tm_max.setObjectName("setting_label")
         s3.addWidget(lbl_tm_max, 8, 0)
         self.tick_max_watch_spin = QSpinBox()
-        self.tick_max_watch_spin.setRange(1, 30)
+        self.tick_max_watch_spin.setRange(1, 100)
         self.tick_max_watch_spin.setValue(15)
         self.tick_max_watch_spin.setSuffix("종목")
         self.tick_max_watch_spin.setToolTip("틱 감시 동시 감시 종목 최대 수")
@@ -1919,7 +1919,7 @@ class TradingUI(QMainWindow):
         lbl_tm_expire = QLabel("감시타임아웃"); lbl_tm_expire.setObjectName("setting_label")
         s3.addWidget(lbl_tm_expire, 8, 2)
         self.tick_expire_spin = QSpinBox()
-        self.tick_expire_spin.setRange(30, 600)
+        self.tick_expire_spin.setRange(30, 28800)
         self.tick_expire_spin.setSingleStep(30)
         self.tick_expire_spin.setValue(180)
         self.tick_expire_spin.setSuffix("초")
