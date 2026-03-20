@@ -2231,16 +2231,17 @@ class TradingEngine(QMainWindow):
         if not code_list:
             return
 
-        # 종목 코드 분리 (마지막 빈 값 제외)
-        codes = code_list.split(';')[:-1] 
-        logger.info(f"📥 [조건식] '{cond_name}' 초기 종목 {len(codes)}개 수신 완료")
+        # 종목 코드 분리 (안전하게 빈 값 필터링)
+        codes = [c for c in code_list.split(';') if c]
+        logger.info(f"📥 [조건식] '{cond_name}' 초기 종목 {len(codes)}개 수신 완료 (순차 편입 시작)")
 
-        for code in codes:
-            # 이미 포트폴리오에 있거나 매수 대기 중인 종목은 제외하고 신규 편입 처리
-            if code not in self.portfolio and code not in self._pending_buy:
-                # 실시간 편입('I') 이벤트와 동일한 로직으로 연결
-                self._on_real_condition(code, "I", cond_name, cond_index)
+        # 이미 보유 중이거나 대기 중인 종목은 제외
+        valid_codes = [c for c in codes if c not in self.portfolio and c not in self._pending_buy]
 
+        # ⭐️ 핵심: 키움 API 과부하(먹통) 방지를 위해 0.2초(200ms) 간격으로 분산 처리
+        for i, code in enumerate(valid_codes):
+            # lambda 변수 캡처를 통해 각 종목이 0.2초, 0.4초, 0.6초 뒤에 순차적으로 실행됨
+            QTimer.singleShot(i * 200, lambda c=code, n=cond_name, idx=cond_index: self._on_real_condition(c, "I", n, idx))
 
     def _on_real_data(self, code, real_type, real_data):
         # [v8.0] 지수 실시간 수신 (KOSPI/KOSDAQ) — 종목 처리와 완전히 분리
