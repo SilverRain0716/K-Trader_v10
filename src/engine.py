@@ -1,11 +1,26 @@
 """
 K-Trader - 매매 엔진 (백엔드 프로세스)
+[v10.2 수정사항]
+  - Critical(C4): 잔고조회 완료 전 매매 차단 — _portfolio_synced 플래그로 크래시 후 보유한도 무력화 방지
+  - Critical(C5): SM 한도 초과 시 즉시매수 폴백 차단 — _pending_buy에서 제거 + 실시간 해제
+  - Critical(C6): 크래시 후 is_manual=True 복원 방지 — is_trading 중 잔고조회 시 봇관리로 편입
+  - Critical(C2/C3): DANGER 2단계 매도 수정 — 신규주문 대신 1단계 취소 후 시장가 재발행
+  - High(H1): SM 매수 시 블랙리스트 체크 추가
+  - High(H4): _on_receive_tr_condition 인덴트 정리
+  - High(H7): _on_receive_tr_condition 대량 편입 제한 (max_watch×2) + C4 가드
+  - Fix(M1): _log() 메서드 의도 주석 (propagate=False와 logger.info 공존 이유)
+  - Fix(M2): _signal_history를 __init__에서 초기화 (hasattr/getattr 방어 제거)
+  - Fix(M3): 미체결 취소 hoga_gb "03"→"00" 통일
+  - Fix(M4): 분할매도 손절 경로에 _cancel_unfilled_buy_orders 추가
+  - Fix(M5): cleanup_expired 타임아웃 해제 시 set_cooldown=False (재편입 즉시 허용)
+  - Fix(M6): BASE_DIR 이중 정의 제거 (frozen-aware 정의 유지)
+  - Fix(C1): 파일 주석 DANGER_GRACE_SEC=10초→5초 (실제 상수는 이미 5초)
 [v10.1 수정사항]
   - Critical: 미체결 매수 주문 취소 (매도 전 _cancel_unfilled_buy_orders — 유령 포지션 방지)
   - Critical: SM 매수 시점 지수필터 재검사 (_handle_smartmoney_buy → _is_index_ok)
   - Feature: 종목 무게 분류(Tier) — 시총+거래대금 기반 SMALL/MID/LARGE 자동 분류
   - Feature: Tier별 동적 BIG_TICK_THRESHOLD + 상대적 보정 (avg_tick × 2.5배)
-  - Feature: 매수 후 DANGER 면역기간 (DANGER_GRACE_SEC=10초)
+  - Feature: 매수 후 DANGER 면역기간 (DANGER_GRACE_SEC=5초)
   - Feature: DANGER 히스테리시스 갭 확대 (-0.30/-0.20 → Tier별, 기본 -0.40/-0.15)
   - Feature: DANGER→NEUTRAL 전환 후 쿨다운 (DANGER_COOLDOWN_SEC=5초)
   - Feature: 조건식 재편입 쿨다운 (REENTRY_COOLDOWN_SEC=30초, 매도완료는 면제)
@@ -60,7 +75,7 @@ from src.utils import safe_int, calc_sell_cost, get_user_data_dir, get_app_dir, 
 from src.ipc import Engine_IPCClient
 
 logger = logging.getLogger("ktrader")
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# [v10.2/M6] BASE_DIR 이중 정의 제거 — 49~52줄의 frozen-aware 정의를 유지
 # [Item 1] 로그는 쓰기 가능한 앱 데이터 디렉토리에 저장
 LOGS_DIR = os.path.join(get_app_dir(), "logs")
 os.makedirs(LOGS_DIR, exist_ok=True)
@@ -301,6 +316,9 @@ class SmartMoneyTracker:
 
         # ── [v10.1/H2] DANGER 쿨다운 ──
         self._danger_cooldown_until = 0.0  # DANGER→NEUTRAL 전환 후 재진입 차단 시각
+
+        # ── [v10.2/M2] 신호 변경 이력 (백테스트/디버그용) ──
+        self._signal_history = []
 
         # ── 타이밍 ──
         self._start_ts = time.time()    # 생성 시각 (타임아웃 기준)
@@ -606,8 +624,6 @@ class SmartMoneyTracker:
             "avg_sweep": (round(sum(self._sweep_buffer) / len(self._sweep_buffer), 4)
                           if self._sweep_buffer else 0),
         }
-        if not hasattr(self, '_signal_history'):
-            self._signal_history = []
         self._signal_history.append(snapshot)
         # 최근 100건만 유지 (메모리 절약)
         if len(self._signal_history) > 100:
@@ -670,7 +686,7 @@ class SmartMoneyTracker:
             "tier": self.tier,
             "big_tick_effective": self._get_big_tick_threshold(),
             # [v10.0] 백테스트용 신호 변경 이력 (최근 10건만 전달, IPC 부하 제한)
-            "signal_history": (getattr(self, '_signal_history', [])[-10:]),
+            "signal_history": self._signal_history[-10:],
         }
 
 
@@ -725,7 +741,13 @@ class SmartMoneyManager:
         return tl
 
     def _log(self, msg: str):
-        """SmartMoney 전용 로그 + 메인 로그 양쪽에 기록."""
+        """SmartMoney 전용 로그 + 메인 로그 양쪽에 기록.
+
+        [v10.2/M1] 의도적으로 propagate=False인 SM 로거와 메인 logger.info()를 모두 호출.
+        - self._tick_logger().info() → smartmoney_YYYYMMDD.log 전용 파일
+        - logger.info()            → engine_YYYYMMDD.log 메인 파일
+        propagate=False를 삭제하면 메인 로그에 2중 출력됩니다. 삭제하지 마세요.
+        """
         self._tick_logger().info(msg)
         logger.info(msg)
         entry = {"time": time.strftime("%H:%M:%S"), "msg": msg}
@@ -875,7 +897,8 @@ class SmartMoneyManager:
                     continue
                 expired.append(code)
         for code in expired:
-            self.unwatch(code, "감시 타임아웃")
+            # [v10.2/M5] 타임아웃 해제는 쿨다운 면제 — 재편입 즉시 허용
+            self.unwatch(code, "감시 타임아웃", set_cooldown=False)
         return expired
 
 
@@ -970,6 +993,11 @@ class TradingEngine(QMainWindow):
 
         # [v10.1/H4] 장 시작 시각 기록 (지수 워밍업용)
         self._market_open_ts = 0.0
+
+        # [v10.2/C4] 잔고 동기화 완료 플래그 — 최초잔고조회 TR 응답 전까지 매매 차단
+        # 크래시 후 재시작 시 portfolio가 비어있는 상태에서 조건식 편입이 먼저 도착하면
+        # 보유한도 체크가 무력화되어 초과 매수가 발생하는 문제 방지
+        self._portfolio_synced = False
 
         # IPC 클라이언트 (UI와 초고속 통신)
         self.ipc_client = Engine_IPCClient(ipc_port)
@@ -1921,6 +1949,16 @@ class TradingEngine(QMainWindow):
 
             if rqname == "최초잔고조회":
                 for code, data in hts_port.items():
+                    # [v10.2/C6] is_manual 판정 개선
+                    # 기존: _bot_bought_codes에 없으면 무조건 is_manual=True
+                    # 문제: 크래시 후 재시작 시 매수/매도 사이클을 거친 종목이
+                    #       _bot_bought_codes에서 빠져있어 is_manual=True → 손절/익절 미작동
+                    # 수정: is_trading 상태에서 잔고에 있는 종목은 봇 관리로 간주하고
+                    #       _bot_bought_codes에도 추가. 사용자가 수동 전환은 UI에서 가능.
+                    if self.is_trading and code not in self._bot_bought_codes:
+                        # 매매 가동 중 잔고조회 = 크래시 복구 가능성 → 봇 관리로 편입
+                        self._bot_bought_codes.add(code)
+                        logger.info(f"🔄 [C6] {data['name']}({code}) _bot_bought_codes에 추가 (크래시 복구)")
                     is_manual = (code not in self._bot_bought_codes)
                     c_name = self.portfolio.get(code, {}).get('cond_name', "기존보유")
                     real_scr = self._next_real_screen()
@@ -1931,6 +1969,11 @@ class TradingEngine(QMainWindow):
                         'locked_amount': 0, 'is_manual': is_manual, 'cond_name': c_name
                     }
                     self.kiwoom.dynamicCall("SetRealReg(QString, QString, QString, QString)", real_scr, code, "10;13;71", "1")
+
+                # [v10.2/C4] 잔고 동기화 완료 → 매매 허용
+                self._portfolio_synced = True
+                holding_count = len([c for c, d in self.portfolio.items() if d.get('qty', 0) > 0])
+                logger.info(f"✅ [C4] 잔고 동기화 완료: 보유 {holding_count}종목 → 매매 허용")
 
                 today = time.strftime("%Y%m%d")
                 # [Fix #1] 당일실현손익 조회에도 비밀번호 포함
@@ -2121,6 +2164,12 @@ class TradingEngine(QMainWindow):
         if not self.is_trading:
             logger.debug(f"🚫 [조건식] {stock_name}({code}) 스킵: 매매 미가동 상태")
             return
+        # [v10.2/C4] 잔고 동기화 완료 전 매매 차단
+        # 크래시 후 재시작 시 portfolio가 비어있으면 보유한도 체크가 무력화됨
+        if not self._portfolio_synced:
+            logger.info(f"🚫 [조건식] {stock_name}({code}) 스킵: 잔고 동기화 미완료 (C4)")
+            self._log_condition_signal(code, stock_name, cond_name, "스킵", "잔고 동기화 대기 중")
+            return
         if event_type != "I":
             # [v9.0] 편출(D) 시 틱 감시 해제 (보유 중이 아닌 경우만)
             if event_type == "D" and self.tick_monitor.is_watching(code):
@@ -2218,25 +2267,53 @@ class TradingEngine(QMainWindow):
                 logger.info(f"👁️ [SM] {stock_name}({code}) 편입 → SmartMoney 추적 시작 (조건식: {cond_name})")
                 self._log_condition_signal(code, stock_name, cond_name, "👁️ SM추적", "스마트머니 분석 중")
             else:
-                # 감시 한도 초과 → 기존 즉시매수 로직으로 폴백
-                logger.info(f"✅ [조건식] {stock_name}({code}) 편입 → 매수 대기열 등록 (SM한도초과, 조건식: {cond_name})")
-                self._log_condition_signal(code, stock_name, cond_name, "⏳ 대기", "SM한도초과 → 즉시매수")
+                # [v10.2/C5] 감시 한도 초과 → 즉시매수 폴백 차단
+                # SM 모드의 의도(분석 후 매수)를 유지하기 위해 _pending_buy에서도 제거
+                info = self._pending_buy.pop(code, None)
+                if info:
+                    try:
+                        self.kiwoom.dynamicCall("SetRealRemove(QString, QString)", info.get('screen_no', 'ALL'), code)
+                    except Exception:
+                        pass
+                logger.info(f"🚫 [SM] {stock_name}({code}) SM 감시 한도 초과 → 매수 보류 (조건식: {cond_name})")
+                self._log_condition_signal(code, stock_name, cond_name, "스킵", "SM한도초과 → 매수보류")
         else:
             # 기존 즉시매수 모드
             logger.info(f"✅ [조건식] {stock_name}({code}) 편입 → 매수 대기열 등록 (조건식: {cond_name})")
             self._log_condition_signal(code, stock_name, cond_name, "⏳ 대기", "체결가 수신 대기 중")
-    
-# [v10.2 추가] 프로그램 재시작 시 기존 편입 종목 복구용
+
+    # [v10.2 추가] 프로그램 재시작 시 기존 편입 종목 복구용
     def _on_receive_tr_condition(self, screen_no, code_list, cond_name, cond_index, next_val):
         if not code_list:
             return
 
+        # [v10.2/C4] 잔고 동기화 완료 전이면 편입 처리 차단
+        if not self._portfolio_synced:
+            codes = [c for c in code_list.split(';') if c]
+            logger.warning(
+                f"🚫 [조건식] '{cond_name}' 초기 종목 {len(codes)}개 수신 → "
+                f"잔고 동기화 미완료로 전체 스킵 (C4)"
+            )
+            return
+
         # 종목 코드 분리 (안전하게 빈 값 필터링)
         codes = [c for c in code_list.split(';') if c]
-        logger.info(f"📥 [조건식] '{cond_name}' 초기 종목 {len(codes)}개 수신 완료 (순차 편입 시작)")
 
         # 이미 보유 중이거나 대기 중인 종목은 제외
         valid_codes = [c for c in codes if c not in self.portfolio and c not in self._pending_buy]
+
+        # [v10.2/H7] 대량 편입 제한 — SM watch 한도의 2배까지만 처리
+        # 수백 종목이 한꺼번에 들어오면 키움 API 과부하 → 크래시 유발 방지
+        max_watch = self.config_mgr.get("tick_monitor_max_watch", 15)
+        max_process = max_watch * 2
+        if len(valid_codes) > max_process:
+            logger.warning(
+                f"⚠️ [조건식] '{cond_name}' 초기 종목 {len(valid_codes)}개 중 "
+                f"{max_process}개만 처리 (H7 과부하 방지)"
+            )
+            valid_codes = valid_codes[:max_process]
+
+        logger.info(f"📥 [조건식] '{cond_name}' 초기 종목 {len(codes)}개 수신, {len(valid_codes)}개 편입 예정")
 
         # ⭐️ 핵심: 키움 API 과부하(먹통) 방지를 위해 0.2초(200ms) 간격으로 분산 처리
         for i, code in enumerate(valid_codes):
@@ -2624,6 +2701,8 @@ class TradingEngine(QMainWindow):
                     if yield_rate <= loss_pct:
                         sellable = data['qty'] - pending
                         if sellable > 0:
+                            # [v10.2/M4] 분할매수 미체결 취소 (유령 포지션 방지)
+                            self._cancel_unfilled_buy_orders(code)
                             data['sell_ordered'] = True
                             data['_last_sell_reason'] = "🛑 손절"
                             self._execute_sell(code, "🛑 손절", sellable)
@@ -2749,8 +2828,16 @@ class TradingEngine(QMainWindow):
         if not self.is_trading or not self.calendar.is_trading_allowed():
             self.tick_monitor._log(f"[SM] 🚫 {name}({code}) 매수 스킵: 매매시간 외")
             return
+        # [v10.2/C4] 잔고 동기화 미완료 시 매수 차단
+        if not self._portfolio_synced:
+            self.tick_monitor._log(f"[SM] 🚫 {name}({code}) 매수 스킵: 잔고 동기화 미완료 (C4)")
+            return
         if code in self.portfolio:
             return  # 이미 보유 중
+        # [v10.2/H1] 블랙리스트 체크 — watch 후 BL에 추가된 경우 매수 방지
+        if code in self.blacklist and self.config_mgr.get("blacklist_enabled", True):
+            self.tick_monitor._log(f"[SM] 🚫 {name}({code}) 매수 스킵: 블랙리스트")
+            return
         if self._check_loss_limit():
             self.tick_monitor._log(f"[SM] 🚫 {name}({code}) 매수 스킵: 일일 손실한도 초과")
             return
@@ -2987,13 +3074,13 @@ class TradingEngine(QMainWindow):
         )
         self._pending_sell_qty[code] = self._pending_sell_qty.get(code, 0) + qty
 
-        # 2단계: 5초 후 미체결 잔량 확인 → 시장가(03) 정정
+        # 2단계: 5초 후 미체결 잔량 확인 → 1단계 취소 후 시장가(03) 재발행
         danger_ts = time.time()
         self.portfolio[code]['_danger_sell_ts'] = danger_ts
         self.portfolio[code]['_danger_sell_qty'] = qty
 
         def _check_danger_unfilled():
-            """5초 후 DANGER 미체결 잔량 확인 → 시장가 정정."""
+            """5초 후 DANGER 미체결 잔량 확인 → 1단계 취소 + 시장가 재매도."""
             try:
                 if code not in self.portfolio:
                     return  # 이미 전량 매도 완료
@@ -3005,22 +3092,42 @@ class TradingEngine(QMainWindow):
                 if remaining <= 0:
                     return  # 전량 체결 완료
 
-                # 미체결 잔량 → 시장가(03) 정정 매도
-                pending = self._pending_sell_qty.get(code, 0)
-                unfilled = remaining - pending  # 이미 pending에 없는 잔량
-                if unfilled <= 0:
-                    unfilled = remaining  # pending이 꼬인 경우 안전장치
+                # [v10.2/C2] 1단계 미체결 매도 주문 먼저 취소 → 시장가 재발행
+                # 기존: org_order_no="" 신규 매도 → 2건 동시 활성 → 2배 수량 매도 위험
+                # 수정: 미체결 매도 주문 취소(order_type=4) 후 시장가 신규 발행
+                cancelled = False
+                for order_no, info in list(self.unexecuted_orders.items()):
+                    if (info.get('code') == code and '-매도' in info.get('type', '')
+                            and info.get('qty', 0) > 0):
+                        try:
+                            self.tr_scheduler.request_order(
+                                rqname="DANGER1단계취소", screen_no=self._next_tr_screen(),
+                                acc_no=self.account, order_type=4,
+                                code=code, qty=info['qty'], price=0,
+                                hoga_gb="00", org_order_no=order_no
+                            )
+                            cancelled = True
+                            logger.info(f"🔄 [DANGER 2단계] {code} 1단계 주문 취소 발행 (주문번호={order_no})")
+                        except Exception as e:
+                            logger.error(f"❌ [DANGER 2단계] {code} 1단계 취소 실패: {e}")
 
+                # [v10.2/C3] pending_sell_qty 정합성: 1단계 취소 시 차감 후 2단계에서 재가산
+                if cancelled:
+                    self._pending_sell_qty[code] = max(0, self._pending_sell_qty.get(code, 0) - qty)
+
+                # 시장가(03) 재매도
                 logger.warning(
                     f"⚠️ [DANGER 2단계] {p.get('name','')}({code}) "
-                    f"5초 경과 미체결 {remaining}주 → 시장가(03) 정정"
+                    f"5초 경과 미체결 {remaining}주 → 1단계 취소 + 시장가(03) 재매도"
                 )
+                p['sell_ordered'] = True
                 self.tr_scheduler.request_order(
                     rqname="DANGER시장가", screen_no=self._next_tr_screen(),
                     acc_no=self.account, order_type=2, code=code,
                     qty=remaining, price=0,
-                    hoga_gb="03", org_order_no=""  # 강제 시장가
+                    hoga_gb="03", org_order_no=""
                 )
+                self._pending_sell_qty[code] = self._pending_sell_qty.get(code, 0) + remaining
             except Exception as e:
                 logger.error(f"❌ [DANGER 2단계] {code} 정정 오류: {e}")
 
@@ -3239,7 +3346,7 @@ class TradingEngine(QMainWindow):
                 o_type = 3 if "+매수" in info['type'] else 4
                 self.tr_scheduler.request_order(
                     "미체결취소", self._next_tr_screen(), self.account,
-                    o_type, info['code'], info['qty'], 0, "03", o_no
+                    o_type, info['code'], info['qty'], 0, "00", o_no  # [v10.2/M3] 취소 주문은 "00" 통일
                 )
                 if o_type == 4 and info['code'] in self.portfolio:
                     code = info['code']
