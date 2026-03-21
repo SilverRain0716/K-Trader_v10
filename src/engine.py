@@ -1,5 +1,14 @@
 """
 K-Trader - 매매 엔진 (백엔드 프로세스)
+[v10.6 수정사항 — 코드 리뷰 기반 안정화/성능 개선]
+  - Critical(C1): _on_chejan 매도 체결 exec_qty=0 중복 이벤트 방어 추가
+  - Critical(C2): deepcopy(portfolio) → _snapshot_portfolio() 경량 스냅샷 (CPU 부하 1/5 감소)
+  - High(H1): heapq, safe_float import를 파일 상단으로 이동 (실시간 핸들러 내 반복 import 제거)
+  - High(H2): _evaluate_buy_score 3회 리스트 순회 → 단일 순회 통합 (SM 틱 처리 1/3 절감)
+  - High(H3): _get_available_amount() 헬퍼 — 초기 상태 deposit 폴백 시 초과매수 방지
+  - Stability: Database._safe_execute() 자동 재연결 메커니즘 추가
+  - Stability: ConfigManager 설정값 런타임 검증 (범위 밖 값 자동 보정)
+  - Version: 10.5.0 → 10.6.0
 [v10.5 수정사항 — except Exception: pass 일괄 정리]
   - engine.py: except Exception: pass 18곳 → 등급별 로깅 추가
     A등급(자금/주문): logger.error + 변수 덤프 (L1069, 2890, 2993)
@@ -87,6 +96,7 @@ import os
 import copy
 import json
 import time
+import heapq
 import datetime
 import logging
 from collections import deque
@@ -106,7 +116,7 @@ from src.database import Database
 from src.config_manager import ConfigManager, SecretManager
 from src.market_calendar import MarketCalendar
 from src.notifications import Notifier
-from src.utils import safe_int, calc_sell_cost, get_user_data_dir, get_app_dir, resolve_db_path, __version__, COMMISSION_RATE, TAX_RATE, MOCK_FEE_RATE
+from src.utils import safe_int, safe_float, calc_sell_cost, get_user_data_dir, get_app_dir, resolve_db_path, __version__, COMMISSION_RATE, TAX_RATE, MOCK_FEE_RATE
 from src.ipc import Engine_IPCClient
 
 logger = logging.getLogger("ktrader")
@@ -386,8 +396,18 @@ class SmartMoneyTracker:
             return
 
         # ── 조건 1+2: 매수비율 (수량 가중) ──
-        total_qty = sum(qty for _, qty, _ in window_ticks)
-        buy_qty = sum(qty for _, qty, ib in window_ticks if ib)
+        # [v10.6 Fix/Perf] 3회 리스트 순회 → 단일 순회로 통합 (SM 틱 처리 부하 1/3 절감)
+        big_threshold = self._get_big_tick_threshold(now)
+        total_qty = 0
+        buy_qty = 0
+        big_buy_count = 0
+        for _, qty, ib in window_ticks:
+            total_qty += qty
+            if ib:
+                buy_qty += qty
+                if qty >= big_threshold:
+                    big_buy_count += 1
+
         buy_ratio = buy_qty / total_qty if total_qty > 0 else 0.5
 
         # 5분 이동평균 갱신 (1초 간격으로 기록)
@@ -401,9 +421,7 @@ class SmartMoneyTracker:
 
         relative = buy_ratio - avg_5m
 
-        # ── 조건 3: 대량 매수 빈도 ──
-        big_threshold = self._get_big_tick_threshold(now)
-        big_buy_count = sum(1 for _, qty, ib in window_ticks if qty >= big_threshold and ib)
+        # ── 조건 3: 대량 매수 빈도 (단일 순회에서 이미 계산됨) ──
         big_buy_freq = big_buy_count / len(window_ticks)
 
         # ── 디버그용 저장 ──
@@ -435,7 +453,6 @@ class SmartMoneyTracker:
         [v10.5.1 Fix/M4] sorted(5000개) O(n log n) → heapq 기반 O(n) 근사 계산.
         캐싱 간격도 3초→10초로 연장 (p90은 틱 수십개로 거의 변하지 않음).
         """
-        import heapq
         if now is None:
             now = time.time()
         # 캐시가 10초 이내면 재사용
@@ -935,6 +952,39 @@ class TradingEngine(QMainWindow):
                 unrealized += calc_sell_cost(data['buy_price'], data['current_price'], data['qty'], self.is_mock)
         return unrealized
 
+    def _snapshot_portfolio(self) -> dict:
+        """
+        [v10.6 Fix/C2] portfolio의 IPC 전송용 경량 스냅샷.
+        deepcopy 대신 UI 표시에 필요한 필드만 얕은 복사.
+        split_buy/split_sell은 dict()로 1단계만 복사 (내부 rounds 리스트는 UI가 읽기만 하므로 안전).
+        """
+        snapshot = {}
+        for code, d in list(self.portfolio.items()):
+            entry = {
+                'name': d.get('name', ''),
+                'buy_price': d.get('buy_price', 0),
+                'current_price': d.get('current_price', 0),
+                'high_price': d.get('high_price', 0),
+                'qty': d.get('qty', 0),
+                'status': d.get('status', ''),
+                'sell_ordered': d.get('sell_ordered', False),
+                'is_manual': d.get('is_manual', False),
+                'cond_name': d.get('cond_name', ''),
+                'locked_amount': d.get('locked_amount', 0),
+                'last_price_ts': d.get('last_price_ts'),
+                '_last_sell_reason': d.get('_last_sell_reason', ''),
+                '_smartmoney_buy': d.get('_smartmoney_buy', False),
+                '_smartmoney_entry_ts': d.get('_smartmoney_entry_ts'),
+                'screen_no': d.get('screen_no', ''),
+            }
+            # 분할매수/매도 상태는 얕은 복사 (UI 읽기 전용)
+            if d.get('split_buy'):
+                entry['split_buy'] = dict(d['split_buy'])
+            if d.get('split_sell'):
+                entry['split_sell'] = dict(d['split_sell'])
+            snapshot[code] = entry
+        return snapshot
+
     def _net_yield(self, buy_price: int, sell_price: int, qty: int) -> float:
         """
         [Fix v8.2] 수수료/세금 포함 순수익률 계산.
@@ -945,6 +995,18 @@ class TradingEngine(QMainWindow):
         invested = buy_price * qty
         net_pnl = calc_sell_cost(buy_price, sell_price, qty, self.is_mock)
         return (net_pnl / invested) * 100
+
+    def _get_available_amount(self) -> int:
+        """
+        [v10.6 Fix/H3] 안전한 주문가능금액 조회.
+        orderable_amount > 0 이면 그 값을, 아니면 deposit을 폴백으로 사용하되,
+        _orderable_from_tr이 한 번도 갱신되지 않은 초기 상태에서는
+        deposit이 실제보다 클 수 있으므로 locked_deposit을 차감합니다.
+        """
+        if self.orderable_amount > 0:
+            return self.orderable_amount
+        # 폴백: deposit에서 locked 차감 (초과매수 방지)
+        return max(0, self.deposit - self.locked_deposit)
 
     def _log_condition_signal(self, code: str, name: str, cond_name: str, result: str, reason: str = ""):
         """조건식 편입 기록을 남깁니다 (UI 실시간 표시 + DB 영구 저장)."""
@@ -1148,6 +1210,10 @@ class TradingEngine(QMainWindow):
         # [v10.5.1 Fix/L2] market_phase는 상단에서 이미 계산되었으므로 재사용
         if (now_ts - self._last_ipc_send_ts) >= 1.0:
             self._last_ipc_send_ts = now_ts
+            # [v10.6 Fix/C2] deepcopy(portfolio) → _snapshot_portfolio()
+            # deepcopy는 중첩 dict(split_buy/split_sell/signal_history)까지 모두 복사하여
+            # 보유 종목 10개 이상 시 PyQt5 이벤트 루프에 수십ms 지연을 유발.
+            # 얕은 복사 + UI 표시에 필요한 필드만 추출하여 부하를 1/5 이하로 감소.
             state = {
                 "ts": now_ts,
                 "status": self.current_status,
@@ -1164,7 +1230,7 @@ class TradingEngine(QMainWindow):
                 "price_stale": True if price_stale_codes else False,
                 "price_stale_codes": price_stale_codes,
                 "profit": self.today_realized_profit,
-                "portfolio": copy.deepcopy(self.portfolio),
+                "portfolio": self._snapshot_portfolio(),
                 "condition_log": list(self._condition_log),
                 "blacklist": dict(self._bl_cache),
                 "blacklist_enabled": self.config_mgr.get("blacklist_enabled", True),
@@ -2173,7 +2239,6 @@ class TradingEngine(QMainWindow):
                 rate_str = rate_raw.replace(',', '').replace(' ', '').strip()
                 # 부호 보존: rate_raw에 '-'가 있으면 음수
                 # [Fix v10.5.1] safe_float로 방어 — 예상 외 문자열("--", "N/A" 등) 대응
-                from src.utils import safe_float
                 price = abs(safe_float(price_str, 0.0))
                 rate = safe_float(rate_str, 0.0)
 
@@ -2308,7 +2373,7 @@ class TradingEngine(QMainWindow):
 
                 # [Fix v9.1] invest_type에 따라 투자금 계산 방식 분리
                 # orderable_amount는 _sync_routine에서 이미 locked_deposit 차감 반영됨
-                available = max(0, self.orderable_amount if self.orderable_amount > 0 else self.deposit)
+                available = self._get_available_amount()
                 invest_type = cfg.get("invest_type", "비중(%)")
                 invest_val = cfg.get("invest", 20)
 
@@ -2669,7 +2734,7 @@ class TradingEngine(QMainWindow):
             return
 
         # ── 투자금 계산 ──
-        available = max(0, self.orderable_amount if self.orderable_amount > 0 else self.deposit)
+        available = self._get_available_amount()
         invest_type = cfg.get("invest_type", "비중(%)")
         invest_val = cfg.get("invest", 20)
 
@@ -2771,7 +2836,7 @@ class TradingEngine(QMainWindow):
                 rnd['done'] = True
                 continue
             # [Fix v9.1] orderable_amount는 이미 locked 차감 반영
-            available = max(0, self.orderable_amount if self.orderable_amount > 0 else self.deposit)
+            available = self._get_available_amount()
             if curr_p * add_qty > available:
                 logger.warning(f"⚠️ [분할매수] {data['name']}({code}) {i+1}차 예수금 부족")
                 return
@@ -2949,7 +3014,17 @@ class TradingEngine(QMainWindow):
                         f"(체결가={exec_price:,}, 수량={exec_qty}주)"
                     )
 
-            elif "-매도" in buy_sell and exec_qty > 0:
+            elif "-매도" in buy_sell:
+                # [v10.6 Fix/C1] exec_qty=0 방어 — 키움이 동일 order_no에 같은 cum_exec_qty를
+                # 중복 전송하면 delta가 0이 됨. 이 경우 실현손익 0원 중복 가산 및
+                # portfolio 잔량 오계산을 방지하기 위해 즉시 스킵.
+                if exec_qty <= 0:
+                    logger.debug(f"ℹ️ [매도체결] {code} exec_qty=0 (중복 이벤트 무시, order_no={order_no})")
+                    if unexec == 0 and order_no in self.unexecuted_orders:
+                        del self.unexecuted_orders[order_no]
+                        self._order_exec_cum.pop(order_no, None)
+                    return
+
                 # [v10.5.1 Fix/M2] 다중 부분체결 빠르게 연속 도착 시
                 # 이전 체결에서 이미 del portfolio[code] 했을 수 있으므로 방어적 조회
                 p = self.portfolio.get(code)

@@ -47,6 +47,36 @@ class Database:
             logger.critical(f"❌ [DB] 데이터베이스 연결 실패: {e}")
             raise
 
+    def _safe_execute(self, query, params=None, is_write=True):
+        """
+        [v10.6 안정성] 자동 재연결 포함 안전한 쿼리 실행.
+        장시간 가동 시 디스크 I/O 에러나 WAL 체크포인트 실패로
+        연결이 깨질 수 있으므로, 1회 재연결 후 재시도합니다.
+        """
+        for attempt in range(2):
+            try:
+                cursor = self.conn.cursor()
+                if params:
+                    cursor.execute(query, params)
+                else:
+                    cursor.execute(query)
+                return cursor
+            except (sqlite3.OperationalError, sqlite3.DatabaseError) as e:
+                if attempt == 0:
+                    logger.warning(f"⚠️ [DB] 쿼리 실행 실패 → 재연결 시도: {e}")
+                    try:
+                        if self.conn:
+                            self.conn.close()
+                    except Exception:
+                        pass
+                    try:
+                        self._connect()
+                    except Exception as reconnect_err:
+                        logger.error(f"❌ [DB] 재연결 실패: {reconnect_err}")
+                        raise e  # 원래 에러를 raise
+                else:
+                    raise
+
     def _init_tables(self):
         try:
             cursor = self.conn.cursor()
@@ -123,14 +153,14 @@ class Database:
         """조건식 편입 신호를 DB에 영구 저장."""
         try:
             now = datetime.datetime.now()
-            self.conn.execute(
+            self._safe_execute(
                 """INSERT INTO condition_log
                    (date, time, stock_code, stock_name, cond_name, result, reason)
                    VALUES (?, ?, ?, ?, ?, ?, ?)""",
                 (now.strftime("%Y-%m-%d"), now.strftime("%H:%M:%S"),
                  code, name, cond_name, result, reason)
             )
-        except sqlite3.Error as e:
+        except (sqlite3.Error, Exception) as e:
             logger.error(f"❌ [DB] 조건식 로그 저장 실패: {e}")
 
     def get_condition_log(self, date: str = None, limit: int = 500) -> list:
@@ -153,14 +183,14 @@ class Database:
         """블랙리스트 추가/제거 이력 저장."""
         try:
             now = datetime.datetime.now()
-            self.conn.execute(
+            self._safe_execute(
                 """INSERT INTO blacklist_log
                    (date, time, action, stock_code, stock_name, reason)
                    VALUES (?, ?, ?, ?, ?, ?)""",
                 (now.strftime("%Y-%m-%d"), now.strftime("%H:%M:%S"),
                  action, code, name, reason)
             )
-        except sqlite3.Error as e:
+        except (sqlite3.Error, Exception) as e:
             logger.error(f"❌ [DB] 블랙리스트 로그 저장 실패: {e}")
 
     def get_blacklist_log(self, days: int = 30) -> list:
@@ -180,21 +210,19 @@ class Database:
     # ── 매매 기록 ──────────────────────────────────
     def log_trade(self, trade_type, cond_name, name, code, price, qty, realized=0, commission=0, tax=0, order_type="시장가", is_mock=False, sell_reason=""):
         try:
-            cursor = self.conn.cursor()
             now = datetime.datetime.now()
             today = now.strftime("%Y-%m-%d")
             t_str = now.strftime("%H:%M:%S")
 
-            cursor.execute(
+            self._safe_execute(
                 """INSERT INTO trade_history
                    (date, time, trade_type, condition_name, stock_name, stock_code,
                    exec_price, exec_qty, realized_profit, commission, tax, order_type, is_mock, sell_reason)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (today, t_str, trade_type, cond_name, name, code, price, qty, realized, commission, tax, order_type, int(is_mock), sell_reason)
             )
-            self.conn.commit()
             logger.info(f"📝 [DB] 거래 기록: {trade_type} {name}({code}) {qty}주 @{price:,} 손익={realized:+,} 수수료={commission:,} 세금={tax:,}")
-        except sqlite3.Error as e:
+        except (sqlite3.Error, Exception) as e:
             logger.error(f"❌ [DB] 거래 기록 실패: {e}")
 
     # ── 매매 통계 ──────────────────────────────────

@@ -252,6 +252,20 @@ DEFAULT_CONFIG = {
 class ConfigManager:
     """봇 설정 로드/저장. 조건식별 파라미터 병합 지원."""
 
+    # [v10.6] 설정값 런타임 검증 스키마
+    # 잘못된 설정(예: loss=5.0 양수, profit=-1.0 음수)이 들어와도
+    # 엔진이 그대로 작동하여 손실을 유발하는 문제 방지
+    _VALIDATION_SCHEMA = {
+        "profit":         {"type": (int, float), "min": 0.1,   "max": 50.0,  "label": "익절(%)"},
+        "loss":           {"type": (int, float), "min": -50.0, "max": -0.1,  "label": "손절(%)"},
+        "ts_activation":  {"type": (int, float), "min": 0.1,   "max": 50.0,  "label": "TS 활성(%)"},
+        "ts_drop":        {"type": (int, float), "min": 0.05,  "max": 10.0,  "label": "TS 하락(%)"},
+        "max_hold":       {"type": int,          "min": 1,     "max": 50,    "label": "최대보유"},
+        "invest":         {"type": (int, float), "min": 1,     "max": 100_000_000, "label": "투자금/비중"},
+        "max_loss":       {"type": (int, float), "min": 0,     "max": 100_000_000, "label": "일일손실한도"},
+        "tick_monitor_max_watch": {"type": int,  "min": 1,     "max": 100,   "label": "SM감시한도"},
+    }
+
     def __init__(self, config_dir: str):
         self.config_path = os.path.join(config_dir, "bot_config.json")
         self._config = copy.deepcopy(DEFAULT_CONFIG)
@@ -283,17 +297,79 @@ class ConfigManager:
             self.save()
             logger.info("✅ [설정] bot_config.json 없음 → 기본 설정 파일 생성.")
 
+        # [v10.6] 설정값 검증 — 범위 밖의 값을 기본값으로 보정
+        self._validate_config()
         return self._config
 
     def save(self, config: dict = None):
         """설정 파일 저장."""
         if config:
             self._config = copy.deepcopy(config)
+        # [v10.6] 저장 전 검증 — UI에서 잘못된 값이 넘어와도 안전
+        self._validate_config()
         try:
             with open(self.config_path, "w", encoding="utf-8") as f:
                 json.dump(self._config, f, ensure_ascii=False, indent=2)
         except Exception as e:
             logger.error(f"❌ [설정] 설정 저장 실패: {e}")
+
+    def _validate_config(self):
+        """
+        [v10.6] 설정값 범위 검증. 위반 시 기본값으로 자동 보정하고 경고 로그 출력.
+        글로벌 설정과 조건식별 파라미터(condition_params) 모두 검증합니다.
+        """
+        corrected = []
+        for key, rule in self._VALIDATION_SCHEMA.items():
+            val = self._config.get(key)
+            if val is None:
+                continue
+            expected_type = rule["type"]
+            # 타입 체크 (int/float 호환)
+            if not isinstance(val, expected_type):
+                try:
+                    val = float(val) if isinstance(expected_type, tuple) else int(val)
+                    self._config[key] = val
+                except (ValueError, TypeError):
+                    self._config[key] = DEFAULT_CONFIG.get(key, val)
+                    corrected.append(f"{rule['label']}({key}): 타입 오류 → 기본값 복원")
+                    continue
+            # 범위 체크
+            if val < rule["min"] or val > rule["max"]:
+                default_val = DEFAULT_CONFIG.get(key, val)
+                corrected.append(
+                    f"{rule['label']}({key}): {val} → {default_val} "
+                    f"(허용 범위: {rule['min']}~{rule['max']})"
+                )
+                self._config[key] = default_val
+
+        # 조건식별 파라미터도 동일 검증
+        cond_params = self._config.get("condition_params", {})
+        for cond_name, params in cond_params.items():
+            if not isinstance(params, dict):
+                continue
+            for key, rule in self._VALIDATION_SCHEMA.items():
+                if key not in params:
+                    continue
+                val = params[key]
+                expected_type = rule["type"]
+                if not isinstance(val, expected_type):
+                    try:
+                        val = float(val) if isinstance(expected_type, tuple) else int(val)
+                        params[key] = val
+                    except (ValueError, TypeError):
+                        del params[key]
+                        corrected.append(f"[{cond_name}] {rule['label']}({key}): 타입 오류 → 글로벌 폴백")
+                        continue
+                if val < rule["min"] or val > rule["max"]:
+                    corrected.append(
+                        f"[{cond_name}] {rule['label']}({key}): {val} → 글로벌 폴백 "
+                        f"(허용 범위: {rule['min']}~{rule['max']})"
+                    )
+                    del params[key]  # 삭제하면 get_condition_param이 글로벌 값으로 폴백
+
+        if corrected:
+            for msg in corrected:
+                logger.warning(f"⚠️ [설정검증] {msg}")
 
     def get(self, key, default=None):
         return self._config.get(key, default)
