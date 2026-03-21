@@ -20,10 +20,9 @@ except ImportError:
 from PyQt5.QtWidgets import (
     QApplication, QWizard, QWizardPage, QVBoxLayout, QHBoxLayout,
     QLabel, QLineEdit, QPushButton, QCheckBox, QMessageBox,
-    QGroupBox, QGridLayout, QTextEdit, QComboBox, QFrame
+    QGroupBox, QGridLayout, QTextEdit, QFrame
 )
-from PyQt5.QtCore import Qt
-from PyQt5.QtGui import QFont, QPixmap
+from PyQt5.QtGui import QFont
 
 # [Fix] src.utils 의존성 제거 — PyInstaller onefile 빌드를 위해 get_app_dir 인라인화
 def get_app_dir() -> str:
