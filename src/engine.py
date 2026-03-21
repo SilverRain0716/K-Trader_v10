@@ -2239,6 +2239,7 @@ class TradingEngine(QMainWindow):
                 rate_str = rate_raw.replace(',', '').replace(' ', '').strip()
                 # 부호 보존: rate_raw에 '-'가 있으면 음수
                 # [Fix v10.5.1] safe_float로 방어 — 예상 외 문자열("--", "N/A" 등) 대응
+                from src.utils import safe_float
                 price = abs(safe_float(price_str, 0.0))
                 rate = safe_float(rate_str, 0.0)
 
@@ -2419,11 +2420,28 @@ class TradingEngine(QMainWindow):
                     split_state = None
 
                 self.locked_deposit += curr_p * qty
+
+                # [v10.6] 일반 매수 피처 스냅샷 — ML 학습용
+                now_dt = datetime.datetime.now()
+                _holding_count = len([c for c, d in list(self.portfolio.items()) if d.get('qty', 0) > 0])
+                _buy_features = {
+                    'buy_ratio': 0, 'big_buy_freq': 0, 'relative': 0,
+                    'tick_count': 0, 'tier': 'MID',
+                    'kospi_rate': round(self.kospi_rate, 2),
+                    'kosdaq_rate': round(self.kosdaq_rate, 2),
+                    'change_rate': 0,
+                    'hour_minute': now_dt.strftime("%H:%M"),
+                    'holding_count': _holding_count,
+                    'expected_price': curr_p,
+                    'is_sm_buy': False,
+                }
+
                 port_entry = {
                     'name': stock_name, 'buy_price': 0, 'current_price': curr_p, 'high_price': curr_p,
                     'qty': 0, 'status': 'BUY_REQ', 'sell_ordered': False, 'screen_no': info['screen_no'],
                     'locked_amount': curr_p * qty, 'is_manual': False, 'cond_name': info['cond_name'],
-                    'last_price_ts': time.time()
+                    'last_price_ts': time.time(),
+                    '_sm_features': _buy_features,  # [v10.6] 체결 시 DB에 기록됨
                 }
                 if split_state:
                     port_entry['split_buy'] = split_state
@@ -2758,6 +2776,25 @@ class TradingEngine(QMainWindow):
 
         # ── 포트폴리오 등록 + 주문 발행 ──
         self.locked_deposit += curr_price * qty
+
+        # [v10.6] 매수 시점 피처 스냅샷 — ML 학습용 데이터 수집
+        now_dt = datetime.datetime.now()
+        holding_count = len([c for c, d in list(self.portfolio.items()) if d['qty'] > 0])
+        _sm_features = {
+            'buy_ratio': round(tracker._last_buy_ratio, 4),
+            'big_buy_freq': round(tracker._last_big_buy_freq, 4),
+            'relative': round(tracker._last_relative, 4),
+            'tick_count': tracker.tick_count,
+            'tier': tracker.tier,
+            'kospi_rate': round(self.kospi_rate, 2),
+            'kosdaq_rate': round(self.kosdaq_rate, 2),
+            'change_rate': round(getattr(tracker, '_change_rate', 0.0), 2),
+            'hour_minute': now_dt.strftime("%H:%M"),
+            'holding_count': holding_count,
+            'expected_price': curr_price,
+            'is_sm_buy': True,
+        }
+
         port_entry = {
             'name': name, 'buy_price': 0, 'current_price': curr_price, 'high_price': curr_price,
             'qty': 0, 'status': 'BUY_REQ', 'sell_ordered': False, 'screen_no': screen_no,
@@ -2765,6 +2802,7 @@ class TradingEngine(QMainWindow):
             'last_price_ts': time.time(),
             '_smartmoney_buy': True,
             '_smartmoney_entry_ts': time.time(),
+            '_sm_features': _sm_features,  # [v10.6] 체결 시 DB에 기록됨
         }
 
         # 분할매도 초기화 (기존 로직과 동일)
@@ -2958,9 +2996,26 @@ class TradingEngine(QMainWindow):
                 self.orderable_amount = max(0, self._orderable_from_tr - self.locked_deposit) if self._orderable_from_tr > 0 else max(0, self.orderable_amount)
                 self.deposit_total = max(0, (self.deposit_total if self.deposit_total > 0 else self.deposit) - cost)
                 self.deposit = max(0, self.deposit - cost)
+
+                # [v10.6] 슬리피지 계산 — 주문 시점 가격 vs 실제 체결가
+                _expected = p.get('current_price', exec_price)  # 주문 시점 current_price
+                _slippage = ((exec_price - _expected) / _expected * 100) if _expected > 0 else 0.0
+
                 self.db.log_trade("매수", p.get('cond_name', ''), p['name'], code, exec_price, exec_qty, 0,
                     commission=int(exec_price * exec_qty * (MOCK_FEE_RATE if self.is_mock else COMMISSION_RATE)),
-                    tax=0, order_type=self.config_mgr.get("order_type", "03"), is_mock=self.is_mock)
+                    tax=0, order_type=self.config_mgr.get("order_type", "03"), is_mock=self.is_mock,
+                    expected_price=_expected, slippage_pct=_slippage)
+
+                # [v10.6] 피처 DB 기록 — 매수 체결 확정 시점에 저장
+                try:
+                    _feat = p.get('_sm_features')
+                    if _feat:
+                        _feat['exec_price'] = exec_price
+                        _feat['slippage_pct'] = round(_slippage, 4)
+                        self.db.log_trade_features(code, p['name'], p.get('cond_name', ''), _feat)
+                except Exception as e:
+                    logger.debug(f"⚠️ [피처] {code} 매수 피처 기록 실패 (무시): {e}")
+
                 p['status'] = 'HOLDING'
 
                 # [Fix] 분할매수 entry_price를 실제 체결가로 동기화
@@ -3073,6 +3128,15 @@ class TradingEngine(QMainWindow):
                     stock_name = p.get('name', code)
                     sell_reason = p.get('_last_sell_reason', '매도완료')
                     is_loss = '손절' in sell_reason
+
+                    # [v10.6] 피처 결과 업데이트 — 매도 완료 시 수익/손실 기록
+                    try:
+                        entry_ts = p.get('_smartmoney_entry_ts') or p.get('last_price_ts') or 0
+                        hold_sec = (time.time() - entry_ts) if entry_ts > 0 else 0
+                        result_pct = self._net_yield(p['buy_price'], exec_price, exec_qty) if p['buy_price'] > 0 else 0.0
+                        self.db.update_trade_result(code, realized, result_pct, sell_reason, hold_sec)
+                    except Exception as e:
+                        logger.debug(f"⚠️ [피처] {code} 결과 업데이트 실패 (무시): {e}")
 
                     # [v10.0] 매도 완료 → SmartMoney 추적 해제
                     # [v10.1/H3] 매도 완료는 쿨다운 면제 (재편입 허용)

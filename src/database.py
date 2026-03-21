@@ -139,10 +139,54 @@ class Database:
 
             # 기존 DB 마이그레이션 — 컬럼 누락 시 추가
             existing = [row[1] for row in cursor.execute("PRAGMA table_info(trade_history)").fetchall()]
-            for col, definition in [("is_mock", "INTEGER DEFAULT 0"), ("sell_reason", "TEXT DEFAULT ''")]:
+            for col, definition in [
+                ("is_mock", "INTEGER DEFAULT 0"),
+                ("sell_reason", "TEXT DEFAULT ''"),
+                ("expected_price", "INTEGER DEFAULT 0"),
+                ("slippage_pct", "REAL DEFAULT 0.0"),
+            ]:
                 if col not in existing:
                     cursor.execute(f"ALTER TABLE trade_history ADD COLUMN {col} {definition}")
                     logger.info(f"✅ [DB] trade_history.{col} 컬럼 추가 (마이그레이션)")
+
+            # [v10.6] 매수 시점 피처 테이블 — ML 학습용 데이터 수집
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS trade_features (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    trade_id INTEGER,
+                    date TEXT NOT NULL,
+                    time TEXT NOT NULL,
+                    stock_code TEXT NOT NULL,
+                    stock_name TEXT,
+                    cond_name TEXT,
+                    -- SM 신호 지표 (매수 시점 스냅샷)
+                    buy_ratio REAL DEFAULT 0,
+                    big_buy_freq REAL DEFAULT 0,
+                    relative REAL DEFAULT 0,
+                    tick_count INTEGER DEFAULT 0,
+                    tier TEXT DEFAULT 'MID',
+                    -- 시장 컨텍스트
+                    kospi_rate REAL DEFAULT 0,
+                    kosdaq_rate REAL DEFAULT 0,
+                    change_rate REAL DEFAULT 0,
+                    hour_minute TEXT,
+                    holding_count INTEGER DEFAULT 0,
+                    -- 체결 품질
+                    expected_price INTEGER DEFAULT 0,
+                    exec_price INTEGER DEFAULT 0,
+                    slippage_pct REAL DEFAULT 0,
+                    -- 매수 경로
+                    is_sm_buy INTEGER DEFAULT 0,
+                    -- 결과 (매도 완료 시 업데이트)
+                    result_pnl INTEGER,
+                    result_pct REAL,
+                    result_reason TEXT,
+                    result_hold_sec REAL
+                )
+            ''')
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_features_date ON trade_features(date)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_features_code ON trade_features(stock_code)")
+
             logger.info("✅ [DB] 로깅 테이블 초기화 완료")
         except sqlite3.Error as e:
             logger.critical(f"❌ [DB] 테이블 생성 실패: {e}")
@@ -208,7 +252,9 @@ class Database:
             return []
 
     # ── 매매 기록 ──────────────────────────────────
-    def log_trade(self, trade_type, cond_name, name, code, price, qty, realized=0, commission=0, tax=0, order_type="시장가", is_mock=False, sell_reason=""):
+    def log_trade(self, trade_type, cond_name, name, code, price, qty, realized=0,
+                  commission=0, tax=0, order_type="시장가", is_mock=False, sell_reason="",
+                  expected_price=0, slippage_pct=0.0):
         try:
             now = datetime.datetime.now()
             today = now.strftime("%Y-%m-%d")
@@ -217,11 +263,16 @@ class Database:
             self._safe_execute(
                 """INSERT INTO trade_history
                    (date, time, trade_type, condition_name, stock_name, stock_code,
-                   exec_price, exec_qty, realized_profit, commission, tax, order_type, is_mock, sell_reason)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (today, t_str, trade_type, cond_name, name, code, price, qty, realized, commission, tax, order_type, int(is_mock), sell_reason)
+                   exec_price, exec_qty, realized_profit, commission, tax, order_type,
+                   is_mock, sell_reason, expected_price, slippage_pct)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (today, t_str, trade_type, cond_name, name, code, price, qty,
+                 realized, commission, tax, order_type, int(is_mock), sell_reason,
+                 expected_price, round(slippage_pct, 4))
             )
-            logger.info(f"📝 [DB] 거래 기록: {trade_type} {name}({code}) {qty}주 @{price:,} 손익={realized:+,} 수수료={commission:,} 세금={tax:,}")
+            self.conn.commit()
+            slip_str = f" 슬리피지={slippage_pct:+.3f}%" if expected_price > 0 else ""
+            logger.info(f"📝 [DB] 거래 기록: {trade_type} {name}({code}) {qty}주 @{price:,} 손익={realized:+,} 수수료={commission:,} 세금={tax:,}{slip_str}")
         except (sqlite3.Error, Exception) as e:
             logger.error(f"❌ [DB] 거래 기록 실패: {e}")
 
@@ -474,6 +525,106 @@ class Database:
         except Exception as e:
             logger.debug(f"[DB] 상태 파일 읽기 실패: {e}")
         return {}
+
+    # ── [v10.6] 매수 피처 수집 (ML 학습용) ──────────────────
+    def log_trade_features(self, code: str, name: str, cond_name: str, features: dict) -> int:
+        """
+        매수 시점의 피처를 저장. 매도 완료 시 update_trade_result()로 결과를 채움.
+        Returns: 삽입된 row id (매도 시 결과 업데이트용)
+        """
+        try:
+            now = datetime.datetime.now()
+            cursor = self.conn.cursor()
+            cursor.execute(
+                """INSERT INTO trade_features
+                   (date, time, stock_code, stock_name, cond_name,
+                    buy_ratio, big_buy_freq, relative, tick_count, tier,
+                    kospi_rate, kosdaq_rate, change_rate, hour_minute,
+                    holding_count, expected_price, exec_price, slippage_pct,
+                    is_sm_buy)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (now.strftime("%Y-%m-%d"), now.strftime("%H:%M:%S"),
+                 code, name, cond_name,
+                 features.get('buy_ratio', 0), features.get('big_buy_freq', 0),
+                 features.get('relative', 0), features.get('tick_count', 0),
+                 features.get('tier', 'MID'),
+                 features.get('kospi_rate', 0), features.get('kosdaq_rate', 0),
+                 features.get('change_rate', 0), features.get('hour_minute', ''),
+                 features.get('holding_count', 0),
+                 features.get('expected_price', 0), features.get('exec_price', 0),
+                 features.get('slippage_pct', 0),
+                 int(features.get('is_sm_buy', False)))
+            )
+            self.conn.commit()
+            row_id = cursor.lastrowid
+            logger.info(f"📊 [피처] {name}({code}) 매수 피처 저장 (id={row_id})")
+            return row_id
+        except sqlite3.Error as e:
+            logger.error(f"❌ [피처] {name}({code}) 저장 실패: {e}")
+            return -1
+
+    def update_trade_result(self, code: str, pnl: int, pct: float, reason: str, hold_sec: float):
+        """
+        매도 완료 시 해당 종목의 가장 최근 피처 레코드에 결과를 업데이트.
+        result_pnl이 NULL인 가장 최근 레코드를 찾아서 채움.
+        """
+        try:
+            self.conn.execute(
+                """UPDATE trade_features
+                   SET result_pnl = ?, result_pct = ?, result_reason = ?, result_hold_sec = ?
+                   WHERE id = (
+                       SELECT id FROM trade_features
+                       WHERE stock_code = ? AND result_pnl IS NULL
+                       ORDER BY id DESC LIMIT 1
+                   )""",
+                (pnl, round(pct, 4), reason, round(hold_sec, 1), code)
+            )
+            self.conn.commit()
+        except sqlite3.Error as e:
+            logger.error(f"❌ [피처] {code} 결과 업데이트 실패: {e}")
+
+    def get_trade_features(self, days: int = 90, completed_only: bool = True) -> list:
+        """
+        ML 학습용 피처 데이터 조회.
+        completed_only=True이면 매도 결과가 있는(result_pnl IS NOT NULL) 레코드만 반환.
+        """
+        cutoff = (datetime.datetime.now() - datetime.timedelta(days=days)).strftime("%Y-%m-%d")
+        try:
+            cursor = self.conn.cursor()
+            where = "date >= ? AND result_pnl IS NOT NULL" if completed_only else "date >= ?"
+            cursor.execute(f"""
+                SELECT date, time, stock_code, stock_name, cond_name,
+                       buy_ratio, big_buy_freq, relative, tick_count, tier,
+                       kospi_rate, kosdaq_rate, change_rate, hour_minute,
+                       holding_count, expected_price, exec_price, slippage_pct,
+                       is_sm_buy, result_pnl, result_pct, result_reason, result_hold_sec
+                FROM trade_features WHERE {where} ORDER BY id
+            """, (cutoff,))
+            return cursor.fetchall()
+        except sqlite3.Error as e:
+            logger.error(f"❌ [피처] 조회 실패: {e}")
+            return []
+
+    def get_slippage_stats(self, days: int = 30) -> dict:
+        """슬리피지 통계 조회 (주문유형별 평균/최대)."""
+        cutoff = (datetime.datetime.now() - datetime.timedelta(days=days)).strftime("%Y-%m-%d")
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute("""
+                SELECT order_type,
+                       COUNT(*),
+                       ROUND(AVG(slippage_pct), 4),
+                       ROUND(MAX(slippage_pct), 4),
+                       ROUND(MIN(slippage_pct), 4)
+                FROM trade_history
+                WHERE date >= ? AND trade_type = '매수' AND expected_price > 0
+                GROUP BY order_type
+            """, (cutoff,))
+            rows = cursor.fetchall()
+            return {row[0]: {"count": row[1], "avg": row[2], "max": row[3], "min": row[4]}
+                    for row in rows}
+        except sqlite3.Error:
+            return {}
 
     def close(self):
         if self.conn:
