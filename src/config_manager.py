@@ -236,17 +236,16 @@ DEFAULT_CONFIG = {
     "index_filter_threshold": -2.0,  # 매수 허용 최소 등락율 (%) — 이 값 미만이면 매수 차단
     "index_filter_target": "both",   # "kospi" / "kosdaq" / "both"(AND) / "either"(OR)
 
-    # [v9.0] 틱 감시 (TickMonitor) — 세력 진입 감지 매수
-    "tick_monitor_enabled": False,           # 글로벌 틱 감시 활성화 (조건식별 오버라이드 가능)
-    "tick_monitor_threshold": 10_000_000,    # 대량 체결 판정 금액 (원) [v9.1] 3천만→1천만
-    "tick_monitor_count": 3,                 # 시간 창 내 필요 대량 매수 횟수 [v9.1] 4→3
-    "tick_monitor_window_sec": 5.0,          # 슬라이딩 윈도우 시간 창 (초) [v9.1] 2→5초
-    "tick_monitor_max_watch": 15,            # 틱 감시 대기 종목 최대 수 [v9.1] 10→15
-    "tick_monitor_buy_ratio": 50,            # 1차 매수 비중 (%, 나머지가 2차)
-    "tick_monitor_dip_pct": -0.5,            # 눌림 판정 하락률 (1차 매수가 대비, %)
-    "tick_monitor_dip_rebuy_count": 1,       # 눌림 중 대량 매수 재출현 필요 횟수
-    "tick_monitor_dip_timeout_sec": 60,      # 눌림 대기 타임아웃 (초)
-    "tick_monitor_expire_sec": 28800,          # 조건식 편입 후 신호 미발생 시 감시 해제 (초) [v9.1] 120→180
+    # [v10.0] SmartMoney 추적 (tick_monitor_enabled, tick_monitor_max_watch만 유효)
+    # v10.3에서 SmartMoneyTracker로 전면 교체됨
+    # 아래 2개 설정은 엔진에서 활발히 사용 중
+    "tick_monitor_enabled": False,           # 글로벌 SM 감시 활성화 (조건식별 오버라이드 가능)
+    "tick_monitor_max_watch": 15,            # SM 감시 대기 종목 최대 수
+    # [v10.4/M4] v9.x TickMonitor 전용 설정 제거 (데드 코드):
+    # tick_monitor_threshold, tick_monitor_count, tick_monitor_window_sec,
+    # tick_monitor_buy_ratio, tick_monitor_dip_pct, tick_monitor_dip_rebuy_count,
+    # tick_monitor_dip_timeout_sec, tick_monitor_expire_sec
+    # → v10.3에서 SmartMoneyTracker 상수(BUY_WINDOW_SEC 등)로 대체됨
 }
 
 
