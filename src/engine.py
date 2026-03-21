@@ -2239,7 +2239,6 @@ class TradingEngine(QMainWindow):
                 rate_str = rate_raw.replace(',', '').replace(' ', '').strip()
                 # 부호 보존: rate_raw에 '-'가 있으면 음수
                 # [Fix v10.5.1] safe_float로 방어 — 예상 외 문자열("--", "N/A" 등) 대응
-                from src.utils import safe_float
                 price = abs(safe_float(price_str, 0.0))
                 rate = safe_float(rate_str, 0.0)
 
