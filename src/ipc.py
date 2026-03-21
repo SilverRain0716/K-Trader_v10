@@ -132,13 +132,25 @@ class Engine_IPCClient(QThread):
                 time.sleep(1)
 
     def send_state(self, state_dict: dict):
-        """엔진에서 UI로 현재 상태(포트폴리오 등) 보고"""
+        """엔진에서 UI로 현재 상태(포트폴리오 등) 보고.
+
+        [v10.5.1 Fix/C1] send_state()는 _sync_routine에서 500ms마다 호출됩니다.
+        기존 코드는 매 호출 끝에서 self.running=False + sock.close()를 실행하여
+        첫 전송 후 소켓이 닫히고, 60초 뒤 하트비트 타임아웃으로 엔진이 자폭했습니다.
+        종료 로직을 stop()으로 분리하여 정상적인 반복 전송이 가능하도록 수정합니다.
+        """
         if self.sock:
             msg = json.dumps(state_dict) + "\n"
             try:
                 self.sock.sendall(msg.encode('utf-8'))
             except Exception as e:
                 logger.debug(f"⚠️ [IPC클라] 상태 전송 실패 (무시): {e}")
+
+    def stop(self):
+        """IPC 클라이언트 종료. 엔진 shutdown/disconnect 시 호출."""
         self.running = False
         if self.sock:
-            self.sock.close()
+            try:
+                self.sock.close()
+            except Exception:
+                pass
