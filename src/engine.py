@@ -545,33 +545,31 @@ class SmartMoneyManager:
         return tier
 
     # ── 감시 등록/해제 ──────────────────────────────────────
-    def watch(self, code: str, name: str, cond_name: str, screen_no: str) -> bool:
+    def watch(self, code: str, name: str, cond_name: str, screen_no: str,
+              change_rate: float = 0.0) -> bool:
         """
-        종목 SmartMoney 추적 등록. 최대 감시 수 초과 시 False 반환.
+        [v10.3] 종목 SmartMoney 추적 등록.
+        감시한도 초과 시 등락률이 가장 낮은 종목을 교체(우선순위 기반).
 
         Args:
             code: 종목코드
             name: 종목명
             cond_name: 조건검색식 이름
             screen_no: 실시간 구독 화면번호
+            change_rate: 등락률(%) — 우선순위 판정용
 
         Returns:
-            True: 등록 성공, False: 한도 초과 또는 쿨다운 중
+            True: 등록 성공, False: MEGA/쿨다운 등 구조적 거부
         """
         # [v10.1/H3] 재편입 쿨다운 체크
         if code in self._cooldown_until:
             if time.time() < self._cooldown_until[code]:
-                return False  # 쿨다운 중 → 조용히 거부 (로그 폭탄 방지)
+                return False  # 쿨다운 중 → 조용히 거부
             else:
-                del self._cooldown_until[code]  # 쿨다운 만료 → 정리
-
-        max_watch = self.config_mgr.get("tick_monitor_max_watch", 15)
-        if len(self._trackers) >= max_watch:
-            self._log(f"[SM] ⚠️ {name}({code}) 등록 불가: 추적 한도 {max_watch}개 초과")
-            return False
+                del self._cooldown_until[code]
 
         if code in self._trackers:
-            return True  # 이미 추적 중 → 성공으로 처리 (로그 생략)
+            return True  # 이미 추적 중
 
         # [v10.1/M1] Tier 분류
         tier = self._classify_tier(code)
@@ -581,9 +579,36 @@ class SmartMoneyManager:
             self._log(f"[SM] 🚫 {name}({code}) 시총 50조+ (MEGA) → SM 감시 제외")
             return False
 
+        max_watch = self.config_mgr.get("tick_monitor_max_watch", 30)
+
+        # [v10.3] 감시한도 초과 시 등락률 최저 종목 교체
+        if len(self._trackers) >= max_watch:
+            # 현재 감시 중인 종목 중 등락률이 가장 낮은 종목 찾기
+            lowest_code = None
+            lowest_rate = float('inf')
+            for tc, tt in self._trackers.items():
+                rate = getattr(tt, '_change_rate', 0.0)
+                if rate < lowest_rate:
+                    lowest_rate = rate
+                    lowest_code = tc
+            # 새 종목의 등락률이 기존 최저보다 높으면 교체
+            if lowest_code and change_rate > lowest_rate:
+                self._log(
+                    f"[SM] 🔄 감시 교체: {self._trackers[lowest_code].name}({lowest_code}, "
+                    f"{lowest_rate:+.1f}%) → {name}({code}, {change_rate:+.1f}%)"
+                )
+                self.unwatch(lowest_code, "등락률 우선순위 교체", set_cooldown=False)
+            else:
+                self._log(
+                    f"[SM] ⚠️ {name}({code}, {change_rate:+.1f}%) 등록 불가: "
+                    f"추적 한도 {max_watch}개, 최저 {lowest_rate:+.1f}%보다 낮음"
+                )
+                return False
+
         tracker = SmartMoneyTracker(code, name, cond_name, screen_no, tier=tier)
+        tracker._change_rate = change_rate  # 우선순위 판정용 등락률 저장
         self._trackers[code] = tracker
-        self._log(f"[SM] 👁️ {name}({code}) 추적 시작 (조건식: {cond_name}, Tier: {tier})")
+        self._log(f"[SM] 👁️ {name}({code}) 추적 시작 (조건식: {cond_name}, Tier: {tier}, 등락률: {change_rate:+.1f}%)")
         return True
 
     def unwatch(self, code: str, reason: str = "", set_cooldown: bool = True):
@@ -623,33 +648,15 @@ class SmartMoneyManager:
     # ── 타임아웃 정리 (엔진 sync에서 호출) ────────────────────
     def cleanup_expired(self, protected_codes: set = None) -> list:
         """
-        감시 타임아웃된 종목 정리. 해제된 코드 리스트 반환.
+        [v10.3] 감시 정리. 타임아웃 폐기 — 조건식 이탈로만 해제.
 
-        Args:
-            protected_codes: 보호 코드 집합 (portfolio 보유 종목).
-                             이 종목들은 타임아웃이어도 tracker를 유지합니다.
+        장중 계속 감시하며, 조건식에서 이탈하면 _on_real_condition("D")에서 unwatch.
+        이 메서드는 하위 호환성을 위해 유지하되, 타임아웃으로 인한 해제는 하지 않습니다.
 
         Returns:
-            list: 타임아웃으로 해제된 종목코드 리스트
+            list: 해제된 종목코드 리스트 (v10.3에서는 항상 빈 리스트)
         """
-        if protected_codes is None:
-            protected_codes = set()
-        expired = []
-        now = time.time()
-        expire_sec = self.config_mgr.get("tick_monitor_expire_sec", SIGNAL_EXPIRE_SEC)
-        for code, t in list(self._trackers.items()):
-            if now - t._start_ts > expire_sec:
-                # 매수 신호 발생 중이면 타임아웃 면제
-                if t.signal == "BUY":
-                    continue
-                # [v10.3] 보유 중 종목도 타임아웃 면제 (SM은 매수에만 사용하지만, 데이터 유지)
-                if code in protected_codes:
-                    continue
-                expired.append(code)
-        for code in expired:
-            # [v10.2/M5] 타임아웃 해제는 쿨다운 면제 — 재편입 즉시 허용
-            self.unwatch(code, "감시 타임아웃", set_cooldown=False)
-        return expired
+        return []
 
 
 class TradingEngine(QMainWindow):
@@ -1978,7 +1985,13 @@ class TradingEngine(QMainWindow):
         if tick_mon_enabled:
             # SmartMoney 모드: 추적기 생성, 신호 발생까지 매수 보류
             screen_no = self._pending_buy[code]['screen_no']
-            if self.tick_monitor.watch(code, stock_name, cond_name, screen_no):
+            # [v10.3] 등락률 조회 → 감시 우선순위 판정용
+            try:
+                raw_rate = self.kiwoom.dynamicCall("GetCommRealData(QString, int)", code, 12)
+                change_rate = float(raw_rate.strip()) if raw_rate and raw_rate.strip() else 0.0
+            except Exception:
+                change_rate = 0.0
+            if self.tick_monitor.watch(code, stock_name, cond_name, screen_no, change_rate=change_rate):
                 # SmartMoney에 등록 성공 → _pending_buy에서 제거 (즉시매수 방지)
                 del self._pending_buy[code]
 
