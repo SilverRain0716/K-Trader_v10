@@ -1,5 +1,18 @@
 """
 K-Trader - 매매 엔진 (백엔드 프로세스)
+[v10.3 수정사항 — 스코어 체계 전면 재설계]
+  - Breaking: 단일 스코어(buy+danger 통합) → buy_score 단독 (DANGER 매도 완전 폐기)
+  - Breaking: 6개 지표 합산 스코어 → 3가지 AND 조건 (매수비율 + 대량빈도 + 상대임계)
+  - Breaking: 틱 기반 10틱 윈도우 → 시간 기반 15초 윈도우
+  - Breaking: baseline(OPT10085 TR 닻) 폐기 — TR 호출 제거
+  - Breaking: DANGER 매도 전체 삭제 (Gate 0, _handle_smartmoney_danger, _execute_danger_sell)
+  - Breaking: BUY_A/BUY_B 2단계 → BUY 단일 신호
+  - Breaking: 히스테리시스(슈미트 트리거) 폐기 — 조건 충족 시 즉시 매수
+  - Feature: 시간 기반 15초 윈도우 + 5분 이동평균 대비 상대 임계값 (+15%p)
+  - Feature: 대량 틱 = 종목별 상위 10%(p90) 동적 계산
+  - Feature: 시총 50조 이상(MEGA) → SM 감시 + 조건식 매수 완전 제외
+  - Retain: 가격 기반 매도(손절/익절/TS/타임컷) 전부 유지 (변경 없음)
+  - Retain: v10.2 버그 수정 전부 유지 (C4/C5/C6/H1/H7/M1~M6)
 [v10.2 수정사항]
   - Critical(C4): 잔고조회 완료 전 매매 차단 — _portfolio_synced 플래그로 크래시 후 보유한도 무력화 방지
   - Critical(C5): SM 한도 초과 시 즉시매수 폴백 차단 — _pending_buy에서 제거 + 실시간 해제
@@ -168,25 +181,26 @@ class TRScheduler(QObject):
 
 
 # ============================================================
-# [v10.0] SmartMoneyTracker — 프로그램 매매 역추산 + 호가 잠식 분석
-# [v10.1] 종목 무게 분류(Tier) + 동적 Threshold + DANGER 안정화
+# [v10.3] SmartMoneyTracker — buy_score 전용 매수 판정 엔진
+#   - 단일 스코어(buy+danger 통합) → buy_score 단독 (DANGER 매도 폐기)
+#   - 틱 기반 10틱 윈도우 → 시간 기반 15초 윈도우
+#   - baseline(OPT10085 TR 닻) 폐기
+#   - 매도는 가격 기반(손절/익절/TS/타임컷)에만 의존
 # ============================================================
-# ── 스코어 가중치 (백테스트 튜닝용 상수) ─────────────────────
-W_BASELINE          = 0.15    # TR 닻 (프로그램 순매수 기조) — 시간 정규화 후
-W_BASELINE_NEG      = 0.10    # 매도 기조 시 감점 (비대칭: 매도 불확실성 반영)
-W_BUY_RATIO         = 0.25    # 최근 10틱 매수비율 (양방향 ±)
-W_BIG_CONSEC_BUY    = 0.15    # 대량 틱 연속 매수 1회당 가산 (최대 +0.30)
-W_BIG_CONSEC_SELL   = 0.15    # 대량 틱 연속 매도 1회당 감점 (최대 -0.30)
-W_TWAP_PER_HIT      = 0.05    # TWAP/VWAP 기계적 패턴 1회당 가산 (최대 +0.15)
-W_SWEEP_RATE        = 0.50    # 호가 잠식률 계수 (avg_sweep × 이 값, 최대 ±0.20)
-TWAP_MIN_AMOUNT      = 5_000_000    # TWAP 패턴 최소 체결금액 (5백만원)
-TWAP_INTERVAL_CV_MAX = 0.30         # TWAP 간격 변동계수 상한 (30%)
-TWAP_VOLUME_CV_MAX   = 0.20         # TWAP 수량 변동계수 상한 (20%)
-TWAP_MIN_CONSEC      = 4            # TWAP 최소 연속 틱 수
-MIN_TICKS_FOR_SIGNAL = 10           # 워밍업: 최소 틱 수 (이전에는 신호 억제)
-SWEEP_BUFFER_SIZE    = 5            # 호가 잠식률 이동평균 윈도우
-TICK_BUFFER_SIZE     = 50           # 최근 틱 버퍼 크기
-SIGNAL_EXPIRE_SEC    = 180          # 기본 감시 타임아웃 (초)
+
+# ── [v10.3] buy_score 판정 상수 ──────────────────────────────
+BUY_WINDOW_SEC          = 15      # 매수비율/대량빈도 계산 윈도우 (초)
+BUY_RATIO_RELATIVE_MIN  = 0.15    # 5분 이동평균 대비 매수비율 초과분 임계값 (+15%p)
+BUY_RATIO_ABSOLUTE_MIN  = 0.70    # 매수비율 절대 하한 (70%)
+BIG_BUY_FREQ_MIN        = 0.05    # 대량 매수 빈도 최소 (5%)
+BUY_AVG_WINDOW_SEC      = 300     # 매수비율 이동평균 윈도우 (5분 = 300초)
+MIN_TICKS_FOR_SIGNAL    = 30      # 워밍업: 최소 틱 수 (15초 윈도우에 충분한 데이터)
+SIGNAL_EXPIRE_SEC       = 180     # 기본 감시 타임아웃 (초)
+
+# ── [v10.3] 대량 틱 기준 ─────────────────────────────────────
+# 종목별 상위 10% 틱을 "대량"으로 판정 (동적 계산)
+# 최소 50틱 축적 후 p90을 계산, 그 전에는 Tier 기본값 사용
+BIG_TICK_WARMUP_COUNT   = 50      # 동적 p90 계산 최소 틱 수
 
 # ── [v10.1/M1] 종목 무게 분류(Tier) 기준 ─────────────────────
 # 시가총액 기준 (1차 분류)
@@ -196,31 +210,16 @@ TIER_MID_MCAP     = 200_000_000_000     # 2,000억 이상 → MID, 미만 → SM
 TIER_UP_VOLUME_KRW   = 50_000_000_000   # 500억 이상 → 한 단계 ↑
 TIER_DOWN_VOLUME_KRW = 3_000_000_000    # 30억 미만  → 한 단계 ↓
 
-# ── [v10.1/M1] Tier별 파라미터 ────────────────────────────────
-# (BIG_TICK_THRESHOLD, THRESH_BUY_A_ENTER, THRESH_DANGER_ENTER, THRESH_DANGER_HOLD)
+# ── [v10.3] Tier별 대량 틱 기본값 (p90 계산 전 사용) ──────────
 TIER_PARAMS = {
-    "SMALL": {"big_tick": 30_000_000,  "buy_a_enter": 0.55, "danger_enter": -0.35, "danger_hold": -0.15},
-    "MID":   {"big_tick": 80_000_000,  "buy_a_enter": 0.60, "danger_enter": -0.40, "danger_hold": -0.15},
-    "LARGE": {"big_tick": 200_000_000, "buy_a_enter": 0.65, "danger_enter": -0.45, "danger_hold": -0.15},
+    "SMALL": {"big_tick_default": 30_000_000},
+    "MID":   {"big_tick_default": 80_000_000},
+    "LARGE": {"big_tick_default": 200_000_000},
 }
 TIER_DEFAULT = "MID"
-# 상대적 보정: 틱 50개 이상 쌓이면 effective_threshold = max(tier_threshold, avg_tick × 배수)
-RELATIVE_TICK_MULTIPLIER = 2.5
-RELATIVE_TICK_MIN_COUNT  = 50   # 상대 보정 적용을 위한 최소 틱 수
 
-# ── 히스테리시스 임계값 (기본값, Tier 미지정 시 사용) ─────────
-THRESH_BUY_A_ENTER   = 0.60   # BUY_A 진입 (Tier별 오버라이드됨)
-THRESH_BUY_A_HOLD    = 0.45   # BUY_A 유지 임계값 (이하로 떨어져야 해제)
-THRESH_BUY_B_ENTER   = 0.45   # BUY_B 진입 임계값
-THRESH_BUY_B_HOLD    = 0.35   # BUY_B 유지 임계값
-THRESH_DANGER_ENTER  = -0.40  # DANGER 진입 (v10.1: -0.30→-0.40 갭 확대)
-THRESH_DANGER_HOLD   = -0.15  # DANGER 해제 (v10.1: -0.20→-0.15 갭 확대)
-
-# ── [v10.1/H2] DANGER 쿨다운 ─────────────────────────────────
-DANGER_COOLDOWN_SEC    = 5.0    # DANGER→NEUTRAL 후 재진입 차단 시간 (초)
-
-# ── [v10.1/H1] 매수 후 DANGER 면역기간 ───────────────────────
-DANGER_GRACE_SEC       = 5.0    # 매수 체결 후 DANGER 매도 억제 시간 (초) — 손절(Gate1)은 무관
+# ── [v10.3] 대형 우량주 제외 ─────────────────────────────────
+MEGA_CAP_EXCLUDE = 50_000_000_000_000   # 시총 50조 이상 → SM 감시 및 매수 제외
 
 # ── [v10.1/H3] 조건식 재편입 쿨다운 ──────────────────────────
 REENTRY_COOLDOWN_SEC   = 30.0   # 추적 해제 후 재편입 차단 시간 (초)
@@ -228,482 +227,226 @@ REENTRY_COOLDOWN_SEC   = 30.0   # 추적 해제 후 재편입 차단 시간 (초
 # ── [v10.1/H4] 장 시작 지수 워밍업 ───────────────────────────
 INDEX_WARMUP_SEC       = 60.0   # 장 시작 후 SM 매수 차단 시간 (초)
 
-# ── BUY_B 추가 필터 ─────────────────────────────────────────
-BUYB_PRICE_DEFEND_TICKS = 30  # 최근 N틱 내 가격 하락 없어야 함
-BUYB_MIN_TICKS          = 10  # BUY_B 판정에 필요한 최소 축적 틱 수
-BUYB_BIG_BUY_RATIO_MIN  = 0.60  # 대량 매수 틱 비율 60% 이상
+# ── 호가 잠식률 (buy_score 보조 지표, 향후 활용) ──────────────
+SWEEP_BUFFER_SIZE      = 5      # 호가 잠식률 이동평균 윈도우
 
 
 class SmartMoneyTracker:
     """
-    스마트 머니(기관/외국인 프로그램) 추적 엔진.
+    [v10.3] 스마트 머니 매수 신호 엔진 (buy_score 전용).
 
-    조건식 편입 종목에 대해 프로그램 매매 역추산과 호가 잠식 분석을 통해
-    매수/위험 신호를 실시간으로 생성합니다.
+    조건식 편입 종목에 대해 실시간 체결 데이터를 분석하여
+    매수 신호(BUY)를 생성합니다. DANGER 매도는 폐기되었으며,
+    매도는 가격 기반(손절/익절/TS/타임컷)에 의존합니다.
+
+    buy_score 판정 조건 (다중 AND):
+      1) 15초 매수비율이 5분 이동평균 대비 +15%p 이상
+      2) 15초 매수비율이 절대 70% 이상
+      3) 대량 매수 빈도 ≥ 5% (대량 = 해당 종목 상위 10%)
 
     동작 흐름:
-      1) 조건검색식 편입 → watch(code) → SetRealReg("20;41")
-      2) OPT10085 TR 1회 → set_baseline(net_buy) (프로그램 닻)
-      3) 실시간 체결(타입 20) → on_tick() → 스코어 갱신
-      4) 실시간 호가잔량(타입 41) → on_orderbook() → 호가 잠식률 갱신
-      5) 스코어 → 신호 등급 (BUY_A / BUY_B / DANGER / NEUTRAL)
-
-    스코어 가중치:
-      - baseline 닻: ±0.15 (시간 정규화)
-      - 최근 10틱 매수비율: ±0.25
-      - 대량 연속 매수(5천만+): +0.30 최대
-      - 대량 연속 매도(5천만+): -0.30 최대
-      - TWAP/VWAP 기계적 패턴: +0.15 최대
-      - 호가 잠식률: ±0.20
-
-    히스테리시스(슈미트 트리거):
-      - 진입 임계값과 유지 임계값을 분리하여 경계값 깜빡임(chattering) 방지
+      1) 조건검색식 편입 → watch(code) → SetRealReg
+      2) 실시간 체결(타입 20) → on_tick() → buy_score 재계산
+      3) 실시간 호가잔량(타입 41) → on_orderbook() → 보조 지표 갱신
+      4) buy_score 조건 충족 → signal = "BUY"
     """
 
     def __init__(self, code: str, name: str, cond_name: str, screen_no: str,
                  tier: str = None):
-        """
-        종목별 SmartMoney 추적기 생성.
-
-        Args:
-            code: 종목코드 (6자리)
-            name: 종목명
-            cond_name: 조건검색식 이름
-            screen_no: 실시간 구독 화면번호
-            tier: 종목 무게 분류 ("SMALL"/"MID"/"LARGE", None이면 TIER_DEFAULT)
-        """
         self.code = code
         self.name = name
         self.cond_name = cond_name
         self.screen_no = screen_no
 
-        # ── [v10.1/M1] 종목 무게 분류 ──
+        # ── Tier 분류 ──
         self.tier = tier or TIER_DEFAULT
         tp = TIER_PARAMS.get(self.tier, TIER_PARAMS[TIER_DEFAULT])
-        self._big_tick_threshold = tp["big_tick"]
-        self._buy_a_enter = tp["buy_a_enter"]
-        self._danger_enter = tp["danger_enter"]
-        self._danger_hold = tp["danger_hold"]
+        self._big_tick_default = tp["big_tick_default"]
 
-        # ── 프로그램 매매 닻 (OPT10085 TR 1회) ──
-        self._baseline_net = 0          # 프로그램 순매수금액 (원)
-        self._baseline_ts = 0.0         # 닻 설정 시각
-        self._baseline_set = False      # 닻 설정 여부
+        # ── 틱 버퍼 (시간 기반 윈도우용) ──
+        # 각 틱: (timestamp_sec, qty, is_buy)
+        self._tick_buffer = deque(maxlen=5000)   # 충분한 버퍼
+        self._tick_count = 0
 
-        # ── 틱 버퍼 ──
-        self._tick_buffer = deque(maxlen=TICK_BUFFER_SIZE)
-        # 각 틱: (timestamp, price, volume, amount, is_buy)
-        self._tick_count = 0            # 총 수신 틱 수
+        # ── 매수비율 이동평균 (5분) ──
+        # (timestamp_sec, buy_ratio) 튜플 리스트
+        self._ratio_history = deque(maxlen=600)  # 최대 600초분
 
-        # ── 대량 틱 연속 카운터 ──
-        self._consec_big_buy = 0        # 대량 매수 연속 횟수
-        self._consec_big_sell = 0       # 대량 매도 연속 횟수
+        # ── 호가 잠식률 (보조 지표) ──
+        self._prev_ask_total = 0
+        self._prev_bid_total = 0
+        self._sweep_buffer = deque(maxlen=SWEEP_BUFFER_SIZE)
 
-        # ── TWAP/VWAP 패턴 감지 ──
-        self._twap_hits = 0             # 기계적 패턴 누적 감지 횟수
-        self._twap_candidates = deque(maxlen=10)  # 패턴 후보 틱
-
-        # ── 호가 잠식률 ──
-        self._prev_ask_total = 0        # 이전 매도호가 잔량 합계
-        self._prev_bid_total = 0        # 이전 매수호가 잔량 합계
-        self._sweep_buffer = deque(maxlen=SWEEP_BUFFER_SIZE)   # 매도벽 잠식률 이동평균
-        self._rsweep_buffer = deque(maxlen=SWEEP_BUFFER_SIZE)  # 매수벽 역잠식률 이동평균
-
-        # ── 스코어 & 신호 ──
-        self._score = 0.0               # 합산 스코어 (-1.0 ~ +1.0)
-        self._signal = "NEUTRAL"        # 현재 신호 등급
-        self._signal_entry_score = 0.0  # 진입 시점 스코어 (타임컷 연장 판정용)
-
-        # ── [v10.1/H2] DANGER 쿨다운 ──
-        self._danger_cooldown_until = 0.0  # DANGER→NEUTRAL 전환 후 재진입 차단 시각
-
-        # ── [v10.2/M2] 신호 변경 이력 (백테스트/디버그용) ──
-        self._signal_history = []
+        # ── 신호 상태 ──
+        self._signal = "NEUTRAL"     # "BUY" 또는 "NEUTRAL"
+        self._buy_score_met = False  # buy_score 조건 충족 여부
+        self._last_buy_ratio = 0.0
+        self._last_big_buy_freq = 0.0
+        self._last_relative = 0.0
 
         # ── 타이밍 ──
-        self._start_ts = time.time()    # 생성 시각 (타임아웃 기준)
+        self._start_ts = time.time()
+        self._signal_history = []
 
     # ── 외부에서 읽는 속성 ──────────────────────────────────
     @property
     def signal(self) -> str:
-        """현재 신호 등급: BUY_A / BUY_B / DANGER / NEUTRAL."""
+        """현재 신호: BUY / NEUTRAL."""
         return self._signal
 
     @property
     def signal_strength(self) -> float:
-        """현재 합산 스코어 (-1.0 ~ +1.0)."""
-        return self._score
+        """현재 매수비율 (디버그/로그용)."""
+        return self._last_buy_ratio
 
     @property
     def is_warmed_up(self) -> bool:
-        """워밍업 완료 여부 (최소 틱 수 축적)."""
+        """워밍업 완료 여부."""
         return self._tick_count >= MIN_TICKS_FOR_SIGNAL
 
     @property
     def tick_count(self) -> int:
-        """수신한 총 틱 수."""
         return self._tick_count
-
-    # ── TR 닻 설정 ──────────────────────────────────────────
-    def set_baseline(self, program_net_buy: int):
-        """
-        OPT10085 TR 응답으로 프로그램 순매수금액을 1회 설정.
-
-        Args:
-            program_net_buy: 프로그램 순매수금액 (양수=매수우위, 음수=매도우위)
-        """
-        self._baseline_net = program_net_buy
-        self._baseline_ts = time.time()
-        self._baseline_set = True
-        self._recalculate_signal()
 
     # ── 주식체결 (타입 20) 수신 ──────────────────────────────
     def on_tick(self, price: int, volume: int, is_buy: bool):
-        """
-        실시간 체결 틱 수신. 내부 지표 갱신 후 스코어 재계산.
-
-        Args:
-            price: 체결가 (양수)
-            volume: 체결량 (양수)
-            is_buy: True=매수체결, False=매도체결
-        """
+        """실시간 체결 틱 수신. buy_score 재계산."""
         now = time.time()
-        amount = price * volume
-        self._tick_buffer.append((now, price, volume, amount, is_buy))
+        self._tick_buffer.append((now, volume, is_buy))
         self._tick_count += 1
-
-        # ── [v10.1/M1] 동적 대량 틱 기준 ──
-        threshold = self._get_big_tick_threshold()
-        if amount >= threshold:
-            if is_buy:
-                self._consec_big_buy += 1
-                self._consec_big_sell = 0
-            else:
-                self._consec_big_sell += 1
-                self._consec_big_buy = 0
-        else:
-            # 비대량 틱이면 연속 카운트 리셋
-            self._consec_big_buy = 0
-            self._consec_big_sell = 0
-
-        # ── TWAP/VWAP 기계적 패턴 감지 ──
-        self._detect_machine_pattern(price, volume, amount, is_buy, now)
-
-        # ── 스코어 재계산 ──
-        self._recalculate_signal()
-
-    def _get_big_tick_threshold(self) -> int:
-        """
-        [v10.1/M1] 동적 대량 틱 기준금액 계산.
-        Tier 기본값을 하한으로 두고, 충분한 틱이 쌓이면 상대 보정 적용.
-        """
-        base = self._big_tick_threshold  # Tier별 기본값
-        if self._tick_count >= RELATIVE_TICK_MIN_COUNT and len(self._tick_buffer) > 0:
-            avg_amount = sum(t[3] for t in self._tick_buffer) / len(self._tick_buffer)
-            return max(base, int(avg_amount * RELATIVE_TICK_MULTIPLIER))
-        return base
+        self._evaluate_buy_score(now)
 
     # ── 호가잔량 (타입 41) 수신 ──────────────────────────────
     def on_orderbook(self, ask1_vol: int, ask2_vol: int, ask3_vol: int,
                      bid1_vol: int = 0, bid2_vol: int = 0, bid3_vol: int = 0):
-        """
-        실시간 호가잔량 수신. 호가 잠식률과 역잠식률 갱신.
-
-        호가 잠식률(sweep_rate):
-          = (이전 매도잔량합 - 현재 매도잔량합) / 이전 매도잔량합
-          양수 = 매도벽 잠식 (매수세), 음수 = 매도벽 증가 (매도세)
-
-        호가 역잠식률(reverse_sweep):
-          = (이전 매수잔량합 - 현재 매수잔량합) / 이전 매수잔량합
-          양수 = 매수벽 잠식 (매도세), 음수 = 매수벽 증가 (매수세)
-
-        Args:
-            ask1_vol ~ ask3_vol: 매도 1~3호가 잔량
-            bid1_vol ~ bid3_vol: 매수 1~3호가 잔량
-        """
+        """호가잔량 수신. 잠식률 갱신 (보조 지표)."""
         curr_ask = ask1_vol + ask2_vol + ask3_vol
-        curr_bid = bid1_vol + bid2_vol + bid3_vol
-
-        # ── 매도벽 잠식률 ──
         if self._prev_ask_total > 0:
             sweep = (self._prev_ask_total - curr_ask) / self._prev_ask_total
             self._sweep_buffer.append(sweep)
         self._prev_ask_total = curr_ask
+        self._prev_bid_total = bid1_vol + bid2_vol + bid3_vol
 
-        # ── 매수벽 역잠식률 ──
-        if self._prev_bid_total > 0 and curr_bid >= 0:
-            rsweep = (self._prev_bid_total - curr_bid) / self._prev_bid_total
-            self._rsweep_buffer.append(rsweep)
-        self._prev_bid_total = curr_bid
-
-        # 호가 변경 시에도 스코어 재계산 (체결 없이 호가만 변하는 경우 대응)
-        self._recalculate_signal()
-
-    # ── TWAP/VWAP 기계적 패턴 감지 (내부) ────────────────────
-    def _detect_machine_pattern(self, price: int, volume: int,
-                                amount: int, is_buy: bool, now: float):
+    # ── [v10.3] buy_score 판정 (핵심) ────────────────────────
+    def _evaluate_buy_score(self, now: float):
         """
-        TWAP/VWAP 알고리즘 매매의 기계적 패턴을 감지.
+        15초 윈도우 내 틱 데이터로 buy_score 3가지 조건을 평가.
 
-        조건 (모두 충족 시 1회 감지):
-          1. 연속 N틱의 체결금액이 모두 최소 기준금액 이상
-          2. 틱 간 시간 간격의 변동계수(CV)가 30% 이내
-          3. 틱 간 체결량의 변동계수(CV)가 20% 이내
+        조건 (모두 AND):
+          1) 매수비율(수량)이 5분 이동평균 대비 +15%p 이상
+          2) 매수비율(수량)이 절대 70% 이상
+          3) 대량 매수 빈도가 전체 틱 중 5% 이상
         """
-        if not is_buy or amount < TWAP_MIN_AMOUNT:
-            self._twap_candidates.clear()
-            return
-
-        self._twap_candidates.append((now, volume, amount))
-
-        if len(self._twap_candidates) >= TWAP_MIN_CONSEC:
-            recent = list(self._twap_candidates)[-TWAP_MIN_CONSEC:]
-
-            # 시간 간격 분석
-            intervals = [recent[i+1][0] - recent[i][0]
-                         for i in range(len(recent) - 1)]
-            # 체결량 분석
-            volumes = [t[1] for t in recent]
-
-            if intervals and volumes:
-                avg_interval = sum(intervals) / len(intervals)
-                avg_volume = sum(volumes) / len(volumes)
-
-                if avg_interval > 0 and avg_volume > 0:
-                    # 변동계수 (CV) = 표준편차 / 평균
-                    interval_std = (sum((x - avg_interval)**2 for x in intervals)
-                                    / len(intervals)) ** 0.5
-                    volume_std = (sum((x - avg_volume)**2 for x in volumes)
-                                  / len(volumes)) ** 0.5
-
-                    interval_cv = interval_std / avg_interval
-                    volume_cv = volume_std / avg_volume
-
-                    if (interval_cv <= TWAP_INTERVAL_CV_MAX and
-                            volume_cv <= TWAP_VOLUME_CV_MAX):
-                        self._twap_hits += 1
-                        self._twap_candidates.clear()  # 감지 후 버퍼 리셋
-
-    # ── 스코어 → 신호 등급 재계산 (핵심) ─────────────────────
-    def _recalculate_signal(self):
-        """
-        모든 지표를 합산하여 스코어를 계산하고, 히스테리시스 기반으로
-        신호 등급을 결정합니다.
-
-        스코어 구성 (총합 clamp(-1.0, +1.0)):
-          ① baseline 닻: ±0.15 (시간 정규화)
-          ② 최근 10틱 매수비율: ±0.25
-          ③ 대량 연속 매수: +0.30 최대 / 대량 연속 매도: -0.30 최대
-          ④ TWAP/VWAP 감지: +0.15 최대
-          ⑤ 호가 잠식률: +0.20 최대 / 역잠식률: -0.20 최대
-        """
-        score = 0.0
-
-        # ── ① baseline 닻 (시간 정규화) ──
-        if self._baseline_set and self._baseline_ts > 0:
-            elapsed_min = max(1, (time.time() - self._baseline_ts) / 60.0)
-            # 분당 프로그램 순매수 강도 (억원 단위로 정규화)
-            intensity = (self._baseline_net / elapsed_min) / 100_000_000
-            if intensity > 0:
-                score += min(W_BASELINE, intensity * W_BASELINE)
-            else:
-                score += max(-W_BASELINE_NEG, intensity * W_BASELINE_NEG)
-
-        # ── ② 최근 10틱 매수비율 ──
-        recent_ticks = list(self._tick_buffer)[-10:]
-        if recent_ticks:
-            total_amount = sum(t[3] for t in recent_ticks)
-            buy_amount = sum(t[3] for t in recent_ticks if t[4])  # is_buy=True
-            if total_amount > 0:
-                buy_ratio = buy_amount / total_amount
-                # (buy_ratio - 0.5) 범위: -0.5 ~ +0.5 → ×0.5 → ±0.25
-                score += (buy_ratio - 0.5) * (W_BUY_RATIO * 2)
-
-        # ── ③ 대량 틱 연속 매수/매도 ──
-        score += min(0.30, self._consec_big_buy * W_BIG_CONSEC_BUY)
-        score -= min(0.30, self._consec_big_sell * W_BIG_CONSEC_SELL)
-
-        # ── ④ TWAP/VWAP 기계적 패턴 (매수 방향만) ──
-        score += min(0.15, self._twap_hits * W_TWAP_PER_HIT)
-
-        # ── ⑤ 호가 잠식률 / 역잠식률 ──
-        if self._sweep_buffer:
-            avg_sweep = sum(self._sweep_buffer) / len(self._sweep_buffer)
-            sweep_contribution = avg_sweep * W_SWEEP_RATE
-            score += max(-0.20, min(0.20, sweep_contribution))
-
-        if self._rsweep_buffer:
-            avg_rsweep = sum(self._rsweep_buffer) / len(self._rsweep_buffer)
-            # 역잠식률 양수 = 매수벽 잠식 = 위험 → 감점
-            rsweep_contribution = avg_rsweep * W_SWEEP_RATE
-            score -= max(-0.20, min(0.20, rsweep_contribution))
-
-        # ── 스코어 클램핑 ──
-        self._score = max(-1.0, min(1.0, score))
-
-        # ── 히스테리시스 기반 신호 등급 결정 ──
-        prev_signal = self._signal
-
-        # 워밍업 미완료 → NEUTRAL 강제
         if not self.is_warmed_up:
             self._signal = "NEUTRAL"
             return
 
-        # [v10.1/M1] Tier별 임계값 사용
-        danger_enter = self._danger_enter
-        danger_hold = self._danger_hold
-        buy_a_enter = self._buy_a_enter
+        # ── 15초 윈도우 내 틱 수집 ──
+        cutoff = now - BUY_WINDOW_SEC
+        window_ticks = [(ts, qty, ib) for ts, qty, ib in self._tick_buffer if ts >= cutoff]
 
-        # DANGER 판정 (최우선)
-        if prev_signal == "DANGER":
-            # 이미 DANGER → 해제 임계값 이상이어야 탈출
-            if self._score > danger_hold:
-                self._signal = "NEUTRAL"
-                # [v10.1/H2] DANGER 해제 시 쿨다운 시작
-                self._danger_cooldown_until = time.time() + DANGER_COOLDOWN_SEC
-            # else: DANGER 유지
-        elif self._score <= danger_enter:
-            # [v10.1/H2] 쿨다운 기간 중이면 DANGER 재진입 차단
-            if time.time() >= self._danger_cooldown_until:
-                self._signal = "DANGER"
-                self._on_signal_change(prev_signal, "DANGER")
-                return  # DANGER는 즉시 확정, BUY 판정 불필요
-
-        # BUY_A 판정
-        if prev_signal == "BUY_A":
-            if self._score < THRESH_BUY_A_HOLD:
-                self._signal = "NEUTRAL"
-            # else: BUY_A 유지
-        elif self._score >= buy_a_enter:
-            self._signal = "BUY_A"
-            self._on_signal_change(prev_signal, "BUY_A")
+        if len(window_ticks) < 10:
+            self._signal = "NEUTRAL"
             return
 
-        # BUY_B 판정 (baseline < 0인 '숨은 주포' 케이스)
-        if prev_signal == "BUY_B":
-            if self._score < THRESH_BUY_B_HOLD:
-                self._signal = "NEUTRAL"
-        elif (self._score >= THRESH_BUY_B_ENTER and
-              self._baseline_set and self._baseline_net < 0):
-            # BUY_B 추가 필터: 가격 방어 + 대량 매수 비율 확인
-            if self._check_buyb_filters():
-                self._signal = "BUY_B"
-                self._on_signal_change(prev_signal, "BUY_B")
-                return
+        # ── 조건 1+2: 매수비율 (수량 가중) ──
+        total_qty = sum(qty for _, qty, _ in window_ticks)
+        buy_qty = sum(qty for _, qty, ib in window_ticks if ib)
+        buy_ratio = buy_qty / total_qty if total_qty > 0 else 0.5
 
-        # 나머지 → NEUTRAL
-        if self._signal not in ("BUY_A", "BUY_B", "DANGER"):
+        # 5분 이동평균 갱신 (1초 간격으로 기록)
+        if not self._ratio_history or (now - self._ratio_history[-1][0]) >= 1.0:
+            self._ratio_history.append((now, buy_ratio))
+
+        # 5분 이동평균 계산
+        avg_cutoff = now - BUY_AVG_WINDOW_SEC
+        recent_ratios = [r for ts, r in self._ratio_history if ts >= avg_cutoff]
+        avg_5m = sum(recent_ratios) / len(recent_ratios) if recent_ratios else 0.5
+
+        relative = buy_ratio - avg_5m
+
+        # ── 조건 3: 대량 매수 빈도 ──
+        big_threshold = self._get_big_tick_threshold()
+        big_buy_count = sum(1 for _, qty, ib in window_ticks if qty >= big_threshold and ib)
+        big_buy_freq = big_buy_count / len(window_ticks)
+
+        # ── 디버그용 저장 ──
+        self._last_buy_ratio = buy_ratio
+        self._last_big_buy_freq = big_buy_freq
+        self._last_relative = relative
+
+        # ── 3가지 조건 AND 판정 ──
+        prev_signal = self._signal
+        cond1 = relative >= BUY_RATIO_RELATIVE_MIN         # 5분 대비 +15%p
+        cond2 = buy_ratio >= BUY_RATIO_ABSOLUTE_MIN        # 절대 70%
+        cond3 = big_buy_freq >= BIG_BUY_FREQ_MIN           # 대량 5%
+
+        if cond1 and cond2 and cond3:
+            self._signal = "BUY"
+            self._buy_score_met = True
+        else:
             self._signal = "NEUTRAL"
+            self._buy_score_met = False
 
-        # 신호 변경 감지 (NEUTRAL 전환 포함)
+        # 신호 변경 기록
         if self._signal != prev_signal:
             self._on_signal_change(prev_signal, self._signal)
 
-    # ── 신호 변경 이벤트 (백테스트용 로깅) ────────────────────
-    def _on_signal_change(self, old_signal: str, new_signal: str):
-        """
-        신호 등급 변경 시 호출. 백테스트 분석을 위한 이벤트 기록.
+    def _get_big_tick_threshold(self) -> int:
+        """대량 틱 기준: 50틱 이상이면 상위 10%(p90), 아니면 Tier 기본값."""
+        if self._tick_count >= BIG_TICK_WARMUP_COUNT:
+            qtys = sorted([qty for _, qty, _ in self._tick_buffer])
+            if qtys:
+                p90_idx = int(len(qtys) * 0.90)
+                return max(1, qtys[min(p90_idx, len(qtys) - 1)])
+        return self._big_tick_default
 
-        signal_history에 (timestamp, old, new, score, 지표스냅샷)을 저장합니다.
-        SmartMoneyManager._log()는 외부에서 호출해야 하므로,
-        여기서는 내부 히스토리만 축적합니다.
-        """
+    # ── 신호 변경 이벤트 ──────────────────────────────────────
+    def _on_signal_change(self, old_signal: str, new_signal: str):
         now = time.time()
-        last_price = self._tick_buffer[-1][1] if self._tick_buffer else 0
         snapshot = {
             "ts": now,
             "old": old_signal,
             "new": new_signal,
-            "score": round(self._score, 4),
-            "price": last_price,
+            "buy_ratio": round(self._last_buy_ratio, 4),
+            "relative": round(self._last_relative, 4),
+            "big_buy_freq": round(self._last_big_buy_freq, 4),
             "tick_count": self._tick_count,
-            "baseline_net": self._baseline_net,
-            "consec_big_buy": self._consec_big_buy,
-            "consec_big_sell": self._consec_big_sell,
-            "twap_hits": self._twap_hits,
-            "avg_sweep": (round(sum(self._sweep_buffer) / len(self._sweep_buffer), 4)
-                          if self._sweep_buffer else 0),
         }
         self._signal_history.append(snapshot)
-        # 최근 100건만 유지 (메모리 절약)
         if len(self._signal_history) > 100:
             self._signal_history = self._signal_history[-100:]
 
-    # ── BUY_B 추가 필터 ─────────────────────────────────────
-    def _check_buyb_filters(self) -> bool:
-        """
-        BUY_B(숨은 주포) 발동 추가 조건 확인.
-
-        조건 (모두 충족):
-          1. 최소 BUYB_MIN_TICKS개 이상 축적
-          2. 최근 N틱 내 가격이 하락하지 않았을 것 (= 매도 압력 → 가격 미전이)
-          3. 대량 매수 틱 비율이 60% 이상
-
-        Returns:
-            True: BUY_B 발동 허용, False: 필터 미통과 → NEUTRAL 유지
-        """
-        ticks = list(self._tick_buffer)
-        if len(ticks) < BUYB_MIN_TICKS:
-            return False
-
-        # 최근 N틱 (있는 만큼)
-        window = ticks[-min(len(ticks), BUYB_PRICE_DEFEND_TICKS):]
-
-        # 필터 1: 가격 방어 — 첫 틱 대비 마지막 틱 가격이 하락하지 않았는지
-        first_price = window[0][1]
-        last_price = window[-1][1]
-        if last_price < first_price:
-            return False
-
-        # 필터 2: 대량 매수 틱 비율
-        big_buy = sum(1 for t in window if t[3] >= self._get_big_tick_threshold() and t[4])
-        big_total = sum(1 for t in window if t[3] >= self._get_big_tick_threshold())
-        if big_total == 0:
-            return False
-        if big_buy / big_total < BUYB_BIG_BUY_RATIO_MIN:
-            return False
-
-        return True
-
     # ── UI 표시용 상태 반환 ──────────────────────────────────
     def get_status(self) -> dict:
-        """UI에 표시할 종목별 추적 상태 반환."""
         return {
             "name": self.name,
             "cond_name": self.cond_name,
             "signal": self._signal,
-            "score": round(self._score, 3),
+            "buy_ratio": round(self._last_buy_ratio, 3),
+            "relative": round(self._last_relative, 3),
+            "big_buy_freq": round(self._last_big_buy_freq, 3),
             "tick_count": self._tick_count,
             "warmed_up": self.is_warmed_up,
-            "baseline_set": self._baseline_set,
-            "baseline_net": self._baseline_net,
-            "consec_big_buy": self._consec_big_buy,
-            "consec_big_sell": self._consec_big_sell,
-            "twap_hits": self._twap_hits,
-            "avg_sweep": (round(sum(self._sweep_buffer) / len(self._sweep_buffer), 4)
-                          if self._sweep_buffer else 0),
-            # [v10.1/M1] 종목 무게 분류 및 동적 threshold
             "tier": self.tier,
-            "big_tick_effective": self._get_big_tick_threshold(),
-            # [v10.0] 백테스트용 신호 변경 이력 (최근 10건만 전달, IPC 부하 제한)
+            "big_tick_threshold": self._get_big_tick_threshold(),
             "signal_history": self._signal_history[-10:],
         }
 
 
 class SmartMoneyManager:
     """
-    전체 종목의 SmartMoneyTracker를 관리하는 매니저.
+    [v10.3] 전체 종목의 SmartMoneyTracker를 관리하는 매니저.
 
-    기존 TickMonitor의 인터페이스와 1:1 대응하여 엔진 통합을 최소화합니다.
     - watch()     → SmartMoneyTracker 생성 + 등록
     - unwatch()   → 추적기 제거
     - is_watching() → 감시 여부 확인
     - cleanup_expired() → 타임아웃 정리
 
-    기존 TickMonitor와 다른 점:
-    - feed_tick() 대신 on_tick() / on_orderbook() 분리
-    - 신호가 BUY1/BUY2 액션이 아닌 BUY_A/BUY_B/DANGER/NEUTRAL 등급
-    - TR 닻 설정 set_baseline() 추가
+    v10.3 변경사항:
+    - 신호가 BUY / NEUTRAL (DANGER 폐기, BUY_B 폐기)
+    - baseline(OPT10085 TR 닻) 폐기
+    - 시총 50조 이상(MEGA) → watch 자체 거부
     """
 
     def __init__(self, config_mgr):
@@ -761,7 +504,7 @@ class SmartMoneyManager:
         키움 마스터 정보로 종목 무게(Tier)를 분류.
         TR 추가 호출 없이 GetMasterLastPrice + GetMasterListedStockCnt로 시총 추정.
 
-        Returns: "SMALL" / "MID" / "LARGE"
+        Returns: "SMALL" / "MID" / "LARGE" / "MEGA" (50조 이상 → SM 제외 대상)
         """
         tier = TIER_DEFAULT
         if not self._kiwoom:
@@ -772,6 +515,9 @@ class SmartMoneyManager:
             listed_cnt = abs(int(self._kiwoom.dynamicCall(
                 "GetMasterListedStockCnt(QString)", code) or "0"))
             mcap = last_price * listed_cnt  # 시가총액 추정
+            # [v10.3] 대형 우량주 제외
+            if mcap >= MEGA_CAP_EXCLUDE:
+                return "MEGA"
             if mcap >= TIER_LARGE_MCAP:
                 tier = "LARGE"
             elif mcap >= TIER_MID_MCAP:
@@ -830,6 +576,11 @@ class SmartMoneyManager:
 
         # [v10.1/M1] Tier 분류
         tier = self._classify_tier(code)
+
+        # [v10.3] 시총 50조 이상 → SM 감시 제외
+        if tier == "MEGA":
+            self._log(f"[SM] 🚫 {name}({code}) 시총 50조+ (MEGA) → SM 감시 제외")
+            return False
 
         tracker = SmartMoneyTracker(code, name, cond_name, screen_no, tier=tier)
         self._trackers[code] = tracker
@@ -890,9 +641,9 @@ class SmartMoneyManager:
         for code, t in list(self._trackers.items()):
             if now - t._start_ts > expire_sec:
                 # 매수 신호 발생 중이면 타임아웃 면제
-                if t.signal in ("BUY_A", "BUY_B"):
+                if t.signal == "BUY":
                     continue
-                # 보유 중인 종목은 타임아웃 면제 (DANGER 감시 유지)
+                # [v10.3] 보유 중 종목도 타임아웃 면제 (SM은 매수에만 사용하지만, 데이터 유지)
                 if code in protected_codes:
                     continue
                 expired.append(code)
@@ -1999,30 +1750,8 @@ class TradingEngine(QMainWindow):
                     )
                     self.today_realized_profit = self.broker_today_realized_profit
 
-        # [v10.0] OPT10085 프로그램매매 종목별 — SmartMoney 닻 설정
-        elif rqname.startswith("프로그램닻_"):
-            try:
-                target_code = rqname.replace("프로그램닻_", "")
-                # OPT10085 응답: 프로그램 순매수 = 프로그램매수 - 프로그램매도
-                raw_buy = self.kiwoom.dynamicCall(
-                    "GetCommData(QString, QString, int, QString)", trcode, rqname, 0, "프로그램매수금액")
-                raw_sell = self.kiwoom.dynamicCall(
-                    "GetCommData(QString, QString, int, QString)", trcode, rqname, 0, "프로그램매도금액")
-                prog_buy = safe_int(raw_buy)
-                prog_sell = safe_int(raw_sell)
-                net_buy = prog_buy - prog_sell
-
-                tracker = self.tick_monitor.get_tracker(target_code)
-                if tracker:
-                    tracker.set_baseline(net_buy)
-                    self.tick_monitor._log(
-                        f"[SM] 📊 {tracker.name}({target_code}) 프로그램 닻 설정: "
-                        f"매수={prog_buy:+,} / 매도={prog_sell:+,} / 순매수={net_buy:+,}"
-                    )
-                else:
-                    logger.warning(f"⚠️ [SM] {target_code} OPT10085 응답 수신했으나 추적기 없음 (이미 해제됨)")
-            except Exception as e:
-                logger.error(f"❌ [SM] OPT10085 파싱 오류: {e}")
+        # [v10.3] OPT10085 프로그램매매 닻 — 폐기 (baseline 삭제)
+        # 기존 "프로그램닻_" rqname 응답은 더 이상 발생하지 않음
 
         # [Fix v8.1] 지수 TR 응답 핸들러 (opt20001 업종현재가요청)
         elif rqname in ("지수조회_KOSPI", "지수조회_KOSDAQ", "지수갱신_KOSPI", "지수갱신_KOSDAQ"):
@@ -2199,6 +1928,13 @@ class TradingEngine(QMainWindow):
             logger.info(f"🚫 [조건식] {stock_name}({code}) 스킵: {reason}")
             self._log_condition_signal(code, stock_name, cond_name, "스킵", reason)
             return
+        # [v10.3] 시총 50조 이상(MEGA) → 조건식 편입 자체를 무시
+        if self.tick_monitor._kiwoom:
+            tier = self.tick_monitor._classify_tier(code)
+            if tier == "MEGA":
+                logger.info(f"🚫 [조건식] {stock_name}({code}) 스킵: 시총 50조+ (MEGA)")
+                self._log_condition_signal(code, stock_name, cond_name, "스킵", "시총 50조+ 제외")
+                return
         if not self.calendar.is_trading_allowed():
             reason = "매매시간 외"
             logger.info(f"🚫 [조건식] {stock_name}({code}) 스킵: {reason}")
@@ -2254,15 +1990,7 @@ class TradingEngine(QMainWindow):
                 except Exception as e:
                     logger.error(f"❌ [SM] {code} 호가잔량 구독 실패: {e}")
 
-                # [v10.0] OPT10085 TR 1회 호출 — 프로그램 매매 닻(Baseline) 설정
-                try:
-                    self.tr_scheduler.request_tr(
-                        rqname=f"프로그램닻_{code}", trcode="OPT10085", next_str=0,
-                        screen_no=self._next_tr_screen(),
-                        inputs={"종목코드": code}
-                    )
-                except Exception as e:
-                    logger.error(f"❌ [SM] {code} OPT10085 TR 요청 실패: {e}")
+                # [v10.3] OPT10085 baseline 폐기 — TR 호출 불필요
 
                 logger.info(f"👁️ [SM] {stock_name}({code}) 편입 → SmartMoney 추적 시작 (조건식: {cond_name})")
                 self._log_condition_signal(code, stock_name, cond_name, "👁️ SM추적", "스마트머니 분석 중")
@@ -2403,10 +2131,7 @@ class TradingEngine(QMainWindow):
                                     old_tier = tracker.tier
                                     tracker.tier = new_tier
                                     tp = TIER_PARAMS.get(new_tier, TIER_PARAMS[TIER_DEFAULT])
-                                    tracker._big_tick_threshold = tp["big_tick"]
-                                    tracker._buy_a_enter = tp["buy_a_enter"]
-                                    tracker._danger_enter = tp["danger_enter"]
-                                    tracker._danger_hold = tp["danger_hold"]
+                                    tracker._big_tick_default = tp["big_tick_default"]
                                     self.tick_monitor._log(
                                         f"[SM] 📊 {tracker.name}({code}) "
                                         f"Tier 보정: {old_tier}→{new_tier} "
@@ -2419,33 +2144,29 @@ class TradingEngine(QMainWindow):
                         tracker.on_tick(tick_price, tick_vol, is_buy_tick)
                         new_sig = tracker.signal
 
-                        # [v10.0] 신호 변경 시 로그 기록 (백테스트용)
+                        # [v10.3] 신호 변경 시 로그 기록
                         if new_sig != prev_sig:
                             self.tick_monitor._log(
                                 f"[SM] 🔔 {tracker.name}({code}) "
                                 f"신호변경 {prev_sig}→{new_sig} "
-                                f"(score={tracker.signal_strength:+.3f}, "
+                                f"(buy_ratio={tracker.signal_strength:.0%}, "
                                 f"price={tick_price:,}, ticks={tracker.tick_count})"
                             )
-                            # DB 기록 (condition_log 테이블 활용)
                             try:
                                 self.db.log_condition_signal(
                                     code, tracker.name, tracker.cond_name,
                                     f"SM:{new_sig}",
-                                    f"score={tracker.signal_strength:+.3f} "
+                                    f"ratio={tracker.signal_strength:.0%} "
                                     f"prev={prev_sig} price={tick_price:,}"
                                 )
                             except Exception:
                                 pass
 
-                        # ── should_buy(): 3중 자물쇠 판정 ──
-                        sig = tracker.signal
-                        if sig in ("BUY_A", "BUY_B") and code not in self.portfolio:
+                        # ── [v10.3] should_buy(): BUY 신호 시 매수 ──
+                        if tracker.signal == "BUY" and code not in self.portfolio:
                             self._handle_smartmoney_buy(code, tracker, tick_price)
 
-                        # ── check_exit(): 보유 중이면 DANGER 감지 ──
-                        if sig == "DANGER" and code in self.portfolio:
-                            self._handle_smartmoney_danger(code, tracker)
+                        # [v10.3] DANGER 매도 폐기 — 가격 기반 매도만 사용
 
                 except Exception as e:
                     logger.error(f"❌ [SM] {code} 틱 처리 오류: {e}")
@@ -2621,57 +2342,21 @@ class TradingEngine(QMainWindow):
             ts_act = self.config_mgr.get_condition_param(c_name, "ts_activation") or 4.0
             ts_drop = self.config_mgr.get_condition_param(c_name, "ts_drop") or 0.75
 
-            # [v10.0] ═══ Gate 0 (최우선): DANGER 신호 즉시 탈출 ═══
-            # 분할매도/TS/익절 어떤 분기보다 먼저 체크합니다.
-            # 기존 분할매도 분기 안에서 return 되더라도 DANGER는 반드시 처리됩니다.
-            if not data.get('is_manual') and self.tick_monitor.is_watching(code):
-                tracker = self.tick_monitor.get_tracker(code)
-                if tracker and tracker.signal == "DANGER":
-                    # [v10.1/H1] 매수 후 grace period 확인
-                    entry_ts = data.get('_smartmoney_entry_ts') or 0
-                    grace_ok = entry_ts <= 0 or (time.time() - entry_ts) >= DANGER_GRACE_SEC
-                    if grace_ok:
-                        sellable = data['qty'] - self._pending_sell_qty.get(code, 0)
-                        if sellable > 0 and not data.get('sell_ordered'):
-                            # [v10.1/C1] 미체결 매수 먼저 취소
-                            self._cancel_unfilled_buy_orders(code)
-                            data['sell_ordered'] = True
-                            data['_last_sell_reason'] = "🚨 DANGER (수급붕괴)"
-                            self.tick_monitor._log(
-                                f"[SM] 🚨 {data.get('name', code)}({code}) DANGER 매도! "
-                                f"(score={tracker.signal_strength:+.3f})"
-                            )
-                            self._execute_danger_sell(code, "🚨 DANGER (수급붕괴)", sellable)
-                            return  # DANGER 발동 시 나머지 매도 로직 스킵
+            # [v10.3] Gate 0 (DANGER 매도) 폐기 — 가격 기반 매도(손절/익절/TS/타임컷)만 사용
 
-            # [v10.0] ═══ Gate 3: 동적 타임컷 — 진입 후 N초 경과 시 매도 ═══
+            # [v10.3] ═══ Gate 3: 타임컷 — 진입 후 N초 경과 시 매도 ═══
             # SM 매수 종목에만 적용 (종가배팅 등 비SM 종목은 해당 없음)
-            # score가 진입 시점보다 개선 중이면 최대 300초까지 연장
+            # [v10.3] score 기반 연장 폐기 — 고정 180초 타임컷
             if not data.get('is_manual') and data.get('_smartmoney_buy'):
                 entry_ts = data.get('_smartmoney_entry_ts') or 0
                 if entry_ts > 0:
                     elapsed = time.time() - entry_ts
-                    base_timeout = 180  # 기본 타임컷 (초)
-                    max_timeout = 300   # 최대 연장 한계 (초)
+                    base_timeout = 180  # 타임컷 (초)
 
-                    # 동적 연장 판정: SM tracker가 살아있고 score가 개선 중이면 연장
-                    extend = False
-                    if self.tick_monitor.is_watching(code):
-                        tracker = self.tick_monitor.get_tracker(code)
-                        if tracker:
-                            entry_score = data.get('_smartmoney_entry_score', 0)
-                            current_score = tracker.signal_strength
-                            # 진입 시점 대비 score가 +0.1 이상 개선 → 연장
-                            if current_score > entry_score + 0.1:
-                                extend = True
-
-                    effective_timeout = max_timeout if extend else base_timeout
-
-                    if elapsed > effective_timeout:
+                    if elapsed > base_timeout:
                         sellable = data['qty'] - self._pending_sell_qty.get(code, 0)
                         if sellable > 0 and not data.get('sell_ordered'):
-                            timeout_type = f"연장({max_timeout}초)" if extend else f"기본({base_timeout}초)"
-                            reason = f"⏰ 타임컷 {timeout_type}"
+                            reason = f"⏰ 타임컷 ({base_timeout}초)"
                             data['sell_ordered'] = True
                             data['_last_sell_reason'] = reason
                             logger.info(
@@ -2679,7 +2364,7 @@ class TradingEngine(QMainWindow):
                                 f"{elapsed:.0f}초 경과 → {reason}"
                             )
                             self._execute_sell(code, reason, sellable)
-                            return  # 타임컷 발동 시 나머지 매도 로직 스킵
+                            return
 
             # [v7.7] 분할매도 처리 — TS 연계형
             # [Fix v8.1] 가동 중 split_sell_enabled를 끈 경우, 기존 포트에 남아있는
@@ -2883,17 +2568,12 @@ class TradingEngine(QMainWindow):
             self.tick_monitor._log(f"[SM] 🚫 {name}({code}) 매수 스킵: {reason}")
             return
 
-        # ── 자물쇠 3: 신호 등급에 따른 비중 결정 ──
-        if sig == "BUY_A":
-            weight = 1.0   # 풀 비중
-            signal_label = "🟢 BUY_A (쌍끌이)"
-        elif sig == "BUY_B":
-            weight = 0.5   # 반 비중
-            signal_label = "🟡 BUY_B (숨은주포)"
-        else:
-            return  # NEUTRAL/DANGER는 매수 안 함
+        # ── [v10.3] 신호 확인 — BUY만 매수 ──
+        if sig != "BUY":
+            return
 
-        qty = max(1, int(total_qty * weight))
+        qty = max(1, total_qty)
+        signal_label = "🟢 BUY (매수비율+대량매수)"
 
         # ── 포트폴리오 등록 + 주문 발행 ──
         self.locked_deposit += curr_price * qty
@@ -2903,7 +2583,6 @@ class TradingEngine(QMainWindow):
             'locked_amount': curr_price * qty, 'is_manual': False, 'cond_name': cond_name,
             'last_price_ts': time.time(),
             '_smartmoney_buy': True,
-            '_smartmoney_entry_score': tracker.signal_strength,
             '_smartmoney_entry_ts': time.time(),
         }
 
@@ -2941,38 +2620,7 @@ class TradingEngine(QMainWindow):
         self._log_condition_signal(code, name, cond_name, f"✅ SM매수", order_detail)
         self.tick_monitor._log(f"[SM] 📈 {name}({code}) {order_detail}")
 
-    def _handle_smartmoney_danger(self, code: str, tracker):
-        """
-        보유 중 종목에 DANGER 신호 감지 시 즉시 매도.
-        (Gate 0은 _on_real_data의 매도 로직 최상단에서도 처리하지만,
-         SmartMoney 추적 중인 종목은 여기서 선제 처리합니다.)
-        """
-        if code not in self.portfolio:
-            return
-        data = self.portfolio[code]
-        if data.get('sell_ordered') or data.get('is_manual'):
-            return
-
-        # [v10.1/H1] 매수 후 DANGER 면역기간 (grace period)
-        # 손절(Gate 1)은 별도 경로이므로 여기서만 억제해도 안전
-        entry_ts = data.get('_smartmoney_entry_ts') or 0
-        if entry_ts > 0 and (time.time() - entry_ts) < DANGER_GRACE_SEC:
-            return  # grace period 중 → DANGER 매도 억제
-
-        sellable = data['qty'] - self._pending_sell_qty.get(code, 0)
-        if sellable <= 0:
-            return
-
-        # [v10.1/C1] 미체결 매수 먼저 취소
-        self._cancel_unfilled_buy_orders(code)
-
-        data['sell_ordered'] = True
-        data['_last_sell_reason'] = "🚨 DANGER (수급붕괴)"
-        self.tick_monitor._log(
-            f"[SM] 🚨 {tracker.name}({code}) DANGER 선제 매도! "
-            f"(score={tracker.signal_strength:+.3f})"
-        )
-        self._execute_danger_sell(code, "🚨 DANGER (수급붕괴)", sellable)
+    # [v10.3] _handle_smartmoney_danger 삭제 — DANGER 매도 폐기
 
     def _check_split_buy(self, code, curr_p):
         """[v7.5] 분할매수: 가격 확인 후 추가 매수."""
@@ -3043,95 +2691,7 @@ class TradingEngine(QMainWindow):
         )
         self._pending_sell_qty[code] = self._pending_sell_qty.get(code, 0) + qty
 
-    def _execute_danger_sell(self, code, reason, qty):
-        """
-        [v10.0] DANGER 전용 2단계 매도.
-
-        1단계: 최유리지정가(06)로 매도 주문 → 슬리피지 최소화
-        2단계: 5초 후 미체결 잔량이 있으면 시장가(03)로 정정 → 확실한 탈출
-
-        일반 _execute_sell과의 차이:
-          - 호가 구분을 글로벌 설정 무시하고 강제로 "06" 사용
-          - 5초 후 미체결 체크 타이머 등록
-        """
-        self.portfolio[code]['status'] = 'SELL_REQ'
-        p = self.portfolio[code]
-        curr_p = p.get('current_price', 0)
-        buy_p = p.get('buy_price', 0)
-        pct = self._net_yield(buy_p, curr_p, qty)
-
-        logger.info(
-            f"📤 [DANGER매도] {p.get('name','')}({code}) {reason} | "
-            f"{qty}주 | 현재={curr_p:,} ({pct:+.2f}%) → 1단계: 최유리지정가(06)"
-        )
-
-        # 1단계: 최유리지정가(06)
-        order_screen = self._next_tr_screen()
-        self.tr_scheduler.request_order(
-            rqname="DANGER매도", screen_no=order_screen, acc_no=self.account,
-            order_type=2, code=code, qty=qty, price=0,
-            hoga_gb="06", org_order_no=""  # 강제 최유리지정가
-        )
-        self._pending_sell_qty[code] = self._pending_sell_qty.get(code, 0) + qty
-
-        # 2단계: 5초 후 미체결 잔량 확인 → 1단계 취소 후 시장가(03) 재발행
-        danger_ts = time.time()
-        self.portfolio[code]['_danger_sell_ts'] = danger_ts
-        self.portfolio[code]['_danger_sell_qty'] = qty
-
-        def _check_danger_unfilled():
-            """5초 후 DANGER 미체결 잔량 확인 → 1단계 취소 + 시장가 재매도."""
-            try:
-                if code not in self.portfolio:
-                    return  # 이미 전량 매도 완료
-                p = self.portfolio[code]
-                # 타임스탬프로 이 타이머가 유효한지 확인 (중복 방지)
-                if p.get('_danger_sell_ts') != danger_ts:
-                    return
-                remaining = p.get('qty', 0)
-                if remaining <= 0:
-                    return  # 전량 체결 완료
-
-                # [v10.2/C2] 1단계 미체결 매도 주문 먼저 취소 → 시장가 재발행
-                # 기존: org_order_no="" 신규 매도 → 2건 동시 활성 → 2배 수량 매도 위험
-                # 수정: 미체결 매도 주문 취소(order_type=4) 후 시장가 신규 발행
-                cancelled = False
-                for order_no, info in list(self.unexecuted_orders.items()):
-                    if (info.get('code') == code and '-매도' in info.get('type', '')
-                            and info.get('qty', 0) > 0):
-                        try:
-                            self.tr_scheduler.request_order(
-                                rqname="DANGER1단계취소", screen_no=self._next_tr_screen(),
-                                acc_no=self.account, order_type=4,
-                                code=code, qty=info['qty'], price=0,
-                                hoga_gb="00", org_order_no=order_no
-                            )
-                            cancelled = True
-                            logger.info(f"🔄 [DANGER 2단계] {code} 1단계 주문 취소 발행 (주문번호={order_no})")
-                        except Exception as e:
-                            logger.error(f"❌ [DANGER 2단계] {code} 1단계 취소 실패: {e}")
-
-                # [v10.2/C3] pending_sell_qty 정합성: 1단계 취소 시 차감 후 2단계에서 재가산
-                if cancelled:
-                    self._pending_sell_qty[code] = max(0, self._pending_sell_qty.get(code, 0) - qty)
-
-                # 시장가(03) 재매도
-                logger.warning(
-                    f"⚠️ [DANGER 2단계] {p.get('name','')}({code}) "
-                    f"5초 경과 미체결 {remaining}주 → 1단계 취소 + 시장가(03) 재매도"
-                )
-                p['sell_ordered'] = True
-                self.tr_scheduler.request_order(
-                    rqname="DANGER시장가", screen_no=self._next_tr_screen(),
-                    acc_no=self.account, order_type=2, code=code,
-                    qty=remaining, price=0,
-                    hoga_gb="03", org_order_no=""
-                )
-                self._pending_sell_qty[code] = self._pending_sell_qty.get(code, 0) + remaining
-            except Exception as e:
-                logger.error(f"❌ [DANGER 2단계] {code} 정정 오류: {e}")
-
-        QTimer.singleShot(5000, _check_danger_unfilled)
+    # [v10.3] _execute_danger_sell 삭제 — DANGER 매도 폐기
 
     def _on_chejan(self, gubun, item_cnt, fid_list):
         if gubun != "0":
