@@ -67,8 +67,11 @@ class UI_IPCServer(QThread):
                             self.state_received.emit(json.loads(line))
                         except json.JSONDecodeError:
                             pass
-            except Exception:
-                break
+            except (ConnectionResetError, ConnectionAbortedError, OSError):
+                break  # 소켓 오류 → 연결 종료
+            except Exception as e:
+                logger.debug(f"⚠️ [IPC서버] 클라이언트 처리 중 오류 (무시): {e}")
+                continue
         self.client_conn = None
 
     def send_command(self, cmd: str, args: str = ""):
@@ -77,13 +80,8 @@ class UI_IPCServer(QThread):
             msg = json.dumps({"cmd": cmd, "args": args}) + "\n"
             try:
                 self.client_conn.sendall(msg.encode('utf-8'))
-            except Exception:
-                pass
-
-    def stop(self):
-        self.running = False
-        if self.server_socket:
-            self.server_socket.close()
+            except Exception as e:
+                logger.debug(f"⚠️ [IPC서버] 명령 전송 실패: {cmd} — {e}")
 
 
 class Engine_IPCClient(QThread):
@@ -119,11 +117,18 @@ class Engine_IPCClient(QThread):
                     while '\n' in buffer:
                         line, buffer = buffer.split('\n', 1)
                         if line.strip():
-                            msg = json.loads(line)
+                            try:
+                                msg = json.loads(line)
+                            except json.JSONDecodeError:
+                                logger.debug(f"⚠️ [IPC클라] JSON 파싱 실패 (무시): {line[:100]}")
+                                continue
                             self.last_heartbeat = time.time()
                             self.command_received.emit(msg.get("cmd", ""), msg.get("args", ""))
-            except Exception:
-                # 연결 실패 또는 끊김 시 1초 대기 후 재연결 시도
+            except (ConnectionResetError, ConnectionAbortedError, OSError):
+                # 소켓 오류 → 1초 대기 후 재연결
+                time.sleep(1)
+            except Exception as e:
+                logger.debug(f"⚠️ [IPC클라] 예기치 못한 오류 → 재연결: {e}")
                 time.sleep(1)
 
     def send_state(self, state_dict: dict):
@@ -132,10 +137,8 @@ class Engine_IPCClient(QThread):
             msg = json.dumps(state_dict) + "\n"
             try:
                 self.sock.sendall(msg.encode('utf-8'))
-            except Exception:
-                pass
-
-    def stop(self):
+            except Exception as e:
+                logger.debug(f"⚠️ [IPC클라] 상태 전송 실패 (무시): {e}")
         self.running = False
         if self.sock:
             self.sock.close()
