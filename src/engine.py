@@ -920,10 +920,10 @@ class TradingEngine(QMainWindow):
                     "date": datetime.date.today().isoformat(),
                     "bot_bought_codes": codes,
                     "blacklist": list(self.blacklist),
-                    "blacklist_names": dict(getattr(self, '_bl_cache', {})),
-                    "blacklist_tags": dict(getattr(self, '_bl_tags', {})),
-                    "traded_today": dict(getattr(self, '_traded_today', {})),
-                    "bl_manual_released": list(getattr(self, '_bl_manual_released', set())),
+                    "blacklist_names": dict(self._bl_cache),
+                    "blacklist_tags": dict(self._bl_tags),
+                    "traded_today": dict(self._traded_today),
+                    "bl_manual_released": list(self._bl_manual_released),
                 }, f, ensure_ascii=False, indent=2)
         except Exception as e:
             logger.error(f"❌ bot_state 저장 실패: {e}")
@@ -1086,7 +1086,7 @@ class TradingEngine(QMainWindow):
         #   수정: TR 원본값(_orderable_from_tr) 기준으로 locked만 차감, 체결 차감은 별도 추적
         try:
             # TR 원본값이 있으면 그 기준으로 locked만 차감
-            if hasattr(self, '_orderable_from_tr') and self._orderable_from_tr > 0:
+            if self._orderable_from_tr > 0:
                 self.orderable_amount = max(0, int(self._orderable_from_tr) - int(self.locked_deposit))
             # 총예수금/출금가능은 TR 값이 없을 때만 deposit을 사용
             self.deposit_total = int(self.deposit_total) if int(self.deposit_total) > 0 else int(self.deposit)
@@ -1166,12 +1166,12 @@ class TradingEngine(QMainWindow):
                 "profit": self.today_realized_profit,
                 "portfolio": copy.deepcopy(self.portfolio),
                 "condition_log": list(self._condition_log),
-                "blacklist": dict(getattr(self, "_bl_cache", {})),
+                "blacklist": dict(self._bl_cache),
                 "blacklist_enabled": self.config_mgr.get("blacklist_enabled", True),
                 "blacklist_mode": self.config_mgr.get("blacklist_mode", 1),
-                "blacklist_tags": dict(getattr(self, "_bl_tags", {})),
-                "traded_today": dict(getattr(self, "_traded_today", {})),
-                "stock_lookup": getattr(self, "_stock_lookup", {}),
+                "blacklist_tags": dict(self._bl_tags),
+                "traded_today": dict(self._traded_today),
+                "stock_lookup": self._stock_lookup,
                 # [v8.0] 지수 실시간 데이터
                 "kospi_price":   self.kospi_price,
                 "kospi_rate":    self.kospi_rate,
@@ -2172,8 +2172,10 @@ class TradingEngine(QMainWindow):
                 price_str = price_raw.replace(',', '').replace('+', '').replace(' ', '').strip()
                 rate_str = rate_raw.replace(',', '').replace(' ', '').strip()
                 # 부호 보존: rate_raw에 '-'가 있으면 음수
-                price = abs(float(price_str)) if price_str else 0
-                rate = float(rate_str) if rate_str else 0.0
+                # [Fix v10.5.1] safe_float로 방어 — 예상 외 문자열("--", "N/A" 등) 대응
+                from src.utils import safe_float
+                price = abs(safe_float(price_str, 0.0))
+                rate = safe_float(rate_str, 0.0)
 
                 if price <= 0:
                     return  # 유효하지 않은 데이터
@@ -2844,7 +2846,7 @@ class TradingEngine(QMainWindow):
                 est_price = self.portfolio[code].get('current_price') or self.portfolio[code].get('buy_price', 0)
                 unlock_amt = est_price * cancelled_qty
                 self.locked_deposit = max(0, self.locked_deposit - unlock_amt)
-                if hasattr(self, '_orderable_from_tr') and self._orderable_from_tr > 0:
+                if self._orderable_from_tr > 0:
                     self.orderable_amount = max(0, self._orderable_from_tr - self.locked_deposit)
                 logger.info(
                     f"🔓 [매수취소] {code} 취소 {cancelled_qty}주 "
@@ -2886,9 +2888,9 @@ class TradingEngine(QMainWindow):
                 #   _sync_routine에서 orderable = _orderable_from_tr - locked 으로 재계산하므로
                 #   orderable_amount를 직접 차감하면 이중 차감됨.
                 #   대신 TR 원본값을 차감하여 다음 TR 갱신까지 정합성 유지.
-                if hasattr(self, '_orderable_from_tr'):
+                if self._orderable_from_tr:
                     self._orderable_from_tr = max(0, self._orderable_from_tr - cost)
-                self.orderable_amount = max(0, self._orderable_from_tr - self.locked_deposit) if hasattr(self, '_orderable_from_tr') and self._orderable_from_tr > 0 else max(0, self.orderable_amount)
+                self.orderable_amount = max(0, self._orderable_from_tr - self.locked_deposit) if self._orderable_from_tr > 0 else max(0, self.orderable_amount)
                 self.deposit_total = max(0, (self.deposit_total if self.deposit_total > 0 else self.deposit) - cost)
                 self.deposit = max(0, self.deposit - cost)
                 self.db.log_trade("매수", p.get('cond_name', ''), p['name'], code, exec_price, exec_qty, 0,
@@ -2966,9 +2968,8 @@ class TradingEngine(QMainWindow):
                     recovered = (p['buy_price'] * exec_qty) + realized
                     self.deposit = max(0, self.deposit + recovered)
                     self.deposit_total = max(0, self.deposit_total + recovered)
-                    if hasattr(self, '_orderable_from_tr'):
-                        self._orderable_from_tr = max(0, self._orderable_from_tr + recovered)
-                    self.orderable_amount = max(0, self._orderable_from_tr - self.locked_deposit) if hasattr(self, '_orderable_from_tr') and self._orderable_from_tr > 0 else max(0, self.orderable_amount + recovered)
+                    self._orderable_from_tr = max(0, self._orderable_from_tr + recovered)
+                    self.orderable_amount = max(0, self._orderable_from_tr - self.locked_deposit) if self._orderable_from_tr > 0 else max(0, self.orderable_amount + recovered)
                     self.withdrawable_amount = max(0, self.withdrawable_amount + recovered)
                 except Exception as e:
                     logger.error(f"❌ [매도체결] {code} 예수금 복구 실패: {e} (buy_price={p.get('buy_price')}, exec_qty={exec_qty}, realized={realized})")
@@ -3063,6 +3064,20 @@ class TradingEngine(QMainWindow):
                         logger.warning(f"🧹 [미체결] {code} 취소 응답 미수신 60초 초과 → 강제 정리 (주문번호={o_no})")
                         if info.get('_cancel_type') == 3:
                             self.locked_deposit = max(0, self.locked_deposit - info.get('locked_amount', 0))
+                        elif info.get('_cancel_type') == 4:
+                            # [Fix] 매도취소 강제 정리 시 pending_sell_qty 복구
+                            try:
+                                unexec_qty = int(info.get('qty', 0) or 0)
+                                if unexec_qty > 0:
+                                    self._pending_sell_qty[code] = max(0, self._pending_sell_qty.get(code, 0) - unexec_qty)
+                                    if self._pending_sell_qty.get(code, 0) == 0:
+                                        self._pending_sell_qty.pop(code, None)
+                                if code in self.portfolio:
+                                    self.portfolio[code]['sell_ordered'] = False
+                                    self.portfolio[code]['status'] = 'HOLDING'
+                                logger.info(f"🔓 [미체결] {code} 매도취소 강제 정리 → pending_sell 복구 ({unexec_qty}주)")
+                            except Exception as e:
+                                logger.error(f"❌ [미체결] {code} 매도취소 강제 정리 pending_sell 복구 실패: {e}")
                         del self.unexecuted_orders[o_no]
                         self._order_exec_cum.pop(o_no, None)
                     continue
@@ -3131,7 +3146,7 @@ def run_engine(ipc_port):
         kt_logger.addHandler(fh)
 
     app = QApplication(sys.argv)
-    engine = TradingEngine(ipc_port)
+    engine = TradingEngine(ipc_port)  # noqa: F841 — QMainWindow는 이벤트 루프가 참조 유지, GC 방지용 변수
     sys.exit(app.exec_())
 
 
