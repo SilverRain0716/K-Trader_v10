@@ -11,7 +11,6 @@ K-Trader v7.0 - 웹 모니터링 대시보드
 """
 import os
 import sys
-import json
 import logging
 import datetime
 import functools
@@ -274,7 +273,7 @@ def run_web_monitor(host: str = "127.0.0.1", port: int = 5000):
         _web_password = ""
 
     if _web_password:
-        print(f"🔒 K-Trader 웹 모니터: Basic Auth 활성 (비밀번호 설정됨)")
+        print("🔒 K-Trader 웹 모니터: Basic Auth 활성 (비밀번호 설정됨)")
     else:
         print(f"⚠️  K-Trader 웹 모니터: 비밀번호 미설정 → localhost({host}) 접근만 허용")
 
