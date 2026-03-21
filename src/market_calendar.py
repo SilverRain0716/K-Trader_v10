@@ -11,12 +11,18 @@ import os
 import requests
 import xml.etree.ElementTree as ET
 
+from src.utils import get_app_dir
+
 logger = logging.getLogger("ktrader")
 
 
 class MarketCalendar:
-    def __init__(self, api_key: str = None, cache_path: str = "config/holidays.json"):
+    def __init__(self, api_key: str = None, cache_path: str = None):
         self.api_key = api_key
+        # [v10.4/H2] cache_path를 쓰기 가능한 앱 데이터 디렉토리 기반으로 변경
+        # PyInstaller 빌드 시 CWD에 의존하지 않도록 절대경로 사용
+        if cache_path is None:
+            cache_path = os.path.join(get_app_dir(), "config", "holidays.json")
         self.cache_path = cache_path
         self.holidays = set()
         self.delayed_days = set()
@@ -114,10 +120,10 @@ class MarketCalendar:
                             self.holidays.add(dt)
                             new_found = True
 
-            last_day = datetime.date(year, 12, 31)
-            while last_day.weekday() >= 5 or last_day in self.holidays:
-                last_day -= datetime.timedelta(days=1)
-            self.holidays.add(last_day)
+            # [v10.4/M5] 연말 마지막 영업일 휴장일 등록 제거
+            # 기존 코드는 12/31에서 역산하여 마지막 영업일을 holidays에 추가했으나
+            # 이는 정상 거래일을 휴장일로 처리하는 버그입니다.
+            # 12/31 자체가 공휴일이면 API 결과에 이미 포함되어 있습니다.
 
             if new_found:
                 self._save_cache()
