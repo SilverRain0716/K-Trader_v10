@@ -12,8 +12,8 @@ import csv
 import logging
 import argparse
 import datetime
-from dataclasses import dataclass, field
-from typing import List, Dict, Optional
+from dataclasses import dataclass
+from typing import List, Dict
 
 logger = logging.getLogger("ktrader")
 
