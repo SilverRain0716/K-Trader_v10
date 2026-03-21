@@ -431,21 +431,28 @@ class SmartMoneyTracker:
     def _get_big_tick_threshold(self, now: float = None) -> int:
         """대량 틱 기준: 50틱 이상이면 상위 10%(p90), 아니면 Tier 기본값.
 
-        [v10.3 Fix] 3초 캐싱 — 매 틱마다 5000개 sorted() 방지.
-        p90 값은 틱 몇 개로는 거의 변하지 않으므로 3초면 충분.
+        [v10.3 Fix] 캐싱 — 매 틱마다 전체 정렬 방지.
+        [v10.5.1 Fix/M4] sorted(5000개) O(n log n) → heapq 기반 O(n) 근사 계산.
+        캐싱 간격도 3초→10초로 연장 (p90은 틱 수십개로 거의 변하지 않음).
         """
+        import heapq
         if now is None:
             now = time.time()
-        # 캐시가 3초 이내면 재사용
-        if (now - self._cached_big_threshold_ts) < 3.0:
+        # 캐시가 10초 이내면 재사용
+        if (now - self._cached_big_threshold_ts) < 10.0:
             return self._cached_big_threshold
         if self._tick_count >= BIG_TICK_WARMUP_COUNT:
-            qtys = sorted([qty for _, qty, _ in self._tick_buffer])
-            if qtys:
-                p90_idx = int(len(qtys) * 0.90)
-                self._cached_big_threshold = max(1, qtys[min(p90_idx, len(qtys) - 1)])
-                self._cached_big_threshold_ts = now
-                return self._cached_big_threshold
+            # 상위 10% = 하위 90%의 최대값
+            # heapq.nsmallest(k, iterable)는 O(n log k)이며, k=0.9n이면 이점이 적음.
+            # 대신 nlargest(상위10%)를 구해서 그 최소값이 p90.
+            n = len(self._tick_buffer)
+            top_count = max(1, n - int(n * 0.90))  # 상위 10% 개수
+            if top_count < n:
+                top_qtys = heapq.nlargest(top_count, (qty for _, qty, _ in self._tick_buffer))
+                if top_qtys:
+                    self._cached_big_threshold = max(1, top_qtys[-1])  # nlargest의 마지막 = p90
+                    self._cached_big_threshold_ts = now
+                    return self._cached_big_threshold
         return self._big_tick_default
 
     # ── 신호 변경 이벤트 ──────────────────────────────────────
@@ -590,7 +597,7 @@ class SmartMoneyManager:
 
     # ── 감시 등록/해제 ──────────────────────────────────────
     def watch(self, code: str, name: str, cond_name: str, screen_no: str,
-              change_rate: float = 0.0) -> bool:
+              change_rate: float = 0.0, tier_override: str = None) -> bool:
         """
         [v10.3] 종목 SmartMoney 추적 등록.
         감시한도 초과 시 등락률이 가장 낮은 종목을 교체(우선순위 기반).
@@ -601,6 +608,7 @@ class SmartMoneyManager:
             cond_name: 조건검색식 이름
             screen_no: 실시간 구독 화면번호
             change_rate: 등락률(%) — 우선순위 판정용
+            tier_override: [v10.5.1/M7] 호출자가 이미 계산한 Tier (None이면 내부 계산)
 
         Returns:
             True: 등록 성공, False: MEGA/쿨다운 등 구조적 거부
@@ -615,8 +623,8 @@ class SmartMoneyManager:
         if code in self._trackers:
             return True  # 이미 추적 중
 
-        # [v10.1/M1] Tier 분류
-        tier = self._classify_tier(code)
+        # [v10.5.1 Fix/M7] 호출자가 이미 tier를 계산했으면 재사용 (API 이중호출 방지)
+        tier = tier_override if tier_override else self._classify_tier(code)
 
         # [v10.3] 시총 50조 이상 → SM 감시 제외
         if tier == "MEGA":
@@ -721,6 +729,8 @@ class TradingEngine(QMainWindow):
 
         # UI 정확성(A단계) 지원용 타임스탬프
         self._last_state_ts = None
+        # [v10.5.1 Fix/H4] 상태 전송 주기 제어 — 500ms마다 deepcopy 대신 1초 간격으로
+        self._last_ipc_send_ts = 0.0
 
         self.kiwoom = QAxWidget("KHOPENAPI.KHOpenAPICtrl.1")
         self.tr_scheduler = TRScheduler(self.kiwoom)
@@ -800,6 +810,9 @@ class TradingEngine(QMainWindow):
         # 보유한도 체크가 무력화되어 초과 매수가 발생하는 문제 방지
         self._portfolio_synced = False
 
+        # [v10.5.1 Fix/H2] 지연 조건식 편입 타이머 목록 — 종료 시 일괄 취소용
+        self._deferred_condition_timers = []
+
         # IPC 클라이언트 (UI와 초고속 통신)
         self.ipc_client = Engine_IPCClient(ipc_port)
         self.ipc_client.command_received.connect(self._process_command)
@@ -849,7 +862,7 @@ class TradingEngine(QMainWindow):
 
     def _next_real_screen(self):
         self.real_screen_no = 150 if self.real_screen_no > 399 else self.real_screen_no + 1
-        return f"0{self.real_screen_no}"
+        return f"{self.real_screen_no:04d}"  # [v10.5.1/L1] 명시적 4자리 포맷
 
     def _build_account_inputs(self, extra: dict = None) -> dict:
         """
@@ -1095,8 +1108,8 @@ class TradingEngine(QMainWindow):
 
         # [Fix E] 장중 보유종목 실시간 시세 구독 자동 복구
         # 30초 이상 가격 갱신이 없으면 구독이 끊긴 것으로 판단하고 재등록합니다.
-        market_phase = self.calendar.get_market_phase()
-        if market_phase == "REGULAR" and self.is_trading:
+        # [v10.5.1 Fix/L2] market_phase 이중 호출 제거 — 상단의 phase 재사용
+        if phase == "REGULAR" and self.is_trading:
             for c, d in list(self.portfolio.items()):
                 if d.get('qty', 0) > 0 and d.get('status') == 'HOLDING':
                     ts = d.get('last_price_ts')
@@ -1113,7 +1126,7 @@ class TradingEngine(QMainWindow):
 
         # [Fix v8.1] 장중 60초마다 지수 TR 폴백 갱신
         # SetRealReg로 업종 실시간이 안 올 경우를 대비한 안전망
-        if market_phase in ("REGULAR", "PRE_MARKET"):
+        if phase in ("REGULAR", "PRE_MARKET"):
             last_idx_ts = getattr(self, '_last_index_tr_ts', 0)
             if now_ts - last_idx_ts > 60:
                 self._last_index_tr_ts = now_ts
@@ -1131,45 +1144,49 @@ class TradingEngine(QMainWindow):
                 except Exception as e:
                     logger.debug(f"[v8.1] 지수 TR 갱신 요청 오류: {e}")
 
-        state = {
-            "ts": now_ts,
-            "status": self.current_status,
-            "is_mock": self.is_mock,
-            "market_phase": market_phase,
-            "market_phase_text": self.calendar.status_text(),
-            "accounts": self.account_list,
-            "conditions": self.condition_list,
-            "deposit": self.deposit,
-            "deposit_total": self.deposit_total,
-            "orderable": self.orderable_amount,
-            "withdrawable": self.withdrawable_amount,
-            "deposit_stale": (time.time() - self._deposit_last_ok_ts > 120) if self._deposit_last_ok_ts else True,
-            "price_stale": True if price_stale_codes else False,
-            "price_stale_codes": price_stale_codes,
-            "profit": self.today_realized_profit,
-            "portfolio": copy.deepcopy(self.portfolio),
-            "condition_log": list(self._condition_log),
-            "blacklist": dict(getattr(self, "_bl_cache", {})),
-            "blacklist_enabled": self.config_mgr.get("blacklist_enabled", True),
-            "blacklist_mode": self.config_mgr.get("blacklist_mode", 1),
-            "blacklist_tags": dict(getattr(self, "_bl_tags", {})),
-            "traded_today": dict(getattr(self, "_traded_today", {})),
-            "stock_lookup": getattr(self, "_stock_lookup", {}),
-            # [v8.0] 지수 실시간 데이터
-            "kospi_price":   self.kospi_price,
-            "kospi_rate":    self.kospi_rate,
-            "kosdaq_price":  self.kosdaq_price,
-            "kosdaq_rate":   self.kosdaq_rate,
-            "kospi_history":  list(self._kospi_history),
-            "kosdaq_history": list(self._kosdaq_history),
-            # [v10.0] SmartMoney 추적 상태
-            "tick_monitor_watched": self.tick_monitor.watched_codes,
-            "tick_monitor_log": self.tick_monitor.tick_log,
-            "smartmoney_signals": {code: t.get_status()
-                                   for code, t in self.tick_monitor._trackers.items()},
-        }
-        self.ipc_client.send_state(state)
-        self.db.write_engine_state(state)
+        # [v10.5.1 Fix/H4] 상태 전송 주기를 1초로 제한하여 deepcopy 부하 경감
+        # [v10.5.1 Fix/L2] market_phase는 상단에서 이미 계산되었으므로 재사용
+        if (now_ts - self._last_ipc_send_ts) >= 1.0:
+            self._last_ipc_send_ts = now_ts
+            state = {
+                "ts": now_ts,
+                "status": self.current_status,
+                "is_mock": self.is_mock,
+                "market_phase": phase,
+                "market_phase_text": self.calendar.status_text(),
+                "accounts": self.account_list,
+                "conditions": self.condition_list,
+                "deposit": self.deposit,
+                "deposit_total": self.deposit_total,
+                "orderable": self.orderable_amount,
+                "withdrawable": self.withdrawable_amount,
+                "deposit_stale": (time.time() - self._deposit_last_ok_ts > 120) if self._deposit_last_ok_ts else True,
+                "price_stale": True if price_stale_codes else False,
+                "price_stale_codes": price_stale_codes,
+                "profit": self.today_realized_profit,
+                "portfolio": copy.deepcopy(self.portfolio),
+                "condition_log": list(self._condition_log),
+                "blacklist": dict(getattr(self, "_bl_cache", {})),
+                "blacklist_enabled": self.config_mgr.get("blacklist_enabled", True),
+                "blacklist_mode": self.config_mgr.get("blacklist_mode", 1),
+                "blacklist_tags": dict(getattr(self, "_bl_tags", {})),
+                "traded_today": dict(getattr(self, "_traded_today", {})),
+                "stock_lookup": getattr(self, "_stock_lookup", {}),
+                # [v8.0] 지수 실시간 데이터
+                "kospi_price":   self.kospi_price,
+                "kospi_rate":    self.kospi_rate,
+                "kosdaq_price":  self.kosdaq_price,
+                "kosdaq_rate":   self.kosdaq_rate,
+                "kospi_history":  list(self._kospi_history),
+                "kosdaq_history": list(self._kosdaq_history),
+                # [v10.0] SmartMoney 추적 상태
+                "tick_monitor_watched": self.tick_monitor.watched_codes,
+                "tick_monitor_log": self.tick_monitor.tick_log,
+                "smartmoney_signals": {code: t.get_status()
+                                       for code, t in self.tick_monitor._trackers.items()},
+            }
+            self.ipc_client.send_state(state)
+            self.db.write_engine_state(state)
 
         # ── 자정 P&L 리셋 (AWS 24시간 운영 대응) ──────────────────────────
         # today_realized_profit은 누적 합산이므로, 날짜가 바뀌면 DB에서 오늘 기준으로 재로드합니다.
@@ -1547,6 +1564,8 @@ class TradingEngine(QMainWindow):
             # UI가 엔진을 재스폰하면 다시 연결됩니다.
             logger.info("🔌 [엔진] 사용자 요청으로 접속 해제 중...")
             self.is_trading = False
+            # [v10.5.1 Fix/H2] 예약된 지연 조건식 편입 타이머 일괄 취소
+            self._cancel_deferred_conditions()
             try:
                 for cond in self.condition_list:
                     try:
@@ -1567,6 +1586,8 @@ class TradingEngine(QMainWindow):
             self._execute_shutdown(reason)
 
     def _execute_shutdown(self, reason: str):
+        # [v10.5.1 Fix/H2] 예약된 지연 조건식 편입 타이머 일괄 취소
+        self._cancel_deferred_conditions()
         # [Fix #1] _sync_routine에서 이미 리포트를 보냈으면 중복 발송하지 않음
         today = datetime.date.today().isoformat()
         if getattr(self, '_shutdown_report_sent_date', None) != today:
@@ -1977,9 +1998,11 @@ class TradingEngine(QMainWindow):
             self._log_condition_signal(code, stock_name, cond_name, "스킵", reason)
             return
         # [v10.3] 시총 50조 이상(MEGA) → 조건식 편입 자체를 무시
+        # [v10.5.1 Fix/M7] tier 결과를 캐싱하여 SM watch에서 이중 호출 방지
+        _cached_tier = None
         if self.tick_monitor._kiwoom:
-            tier = self.tick_monitor._classify_tier(code)
-            if tier == "MEGA":
+            _cached_tier = self.tick_monitor._classify_tier(code)
+            if _cached_tier == "MEGA":
                 logger.info(f"🚫 [조건식] {stock_name}({code}) 스킵: 시총 50조+ (MEGA)")
                 self._log_condition_signal(code, stock_name, cond_name, "스킵", "시총 50조+ 제외")
                 return
@@ -2033,7 +2056,8 @@ class TradingEngine(QMainWindow):
                 change_rate = float(raw_rate.strip()) if raw_rate and raw_rate.strip() else 0.0
             except Exception:
                 change_rate = 0.0
-            if self.tick_monitor.watch(code, stock_name, cond_name, screen_no, change_rate=change_rate):
+            if self.tick_monitor.watch(code, stock_name, cond_name, screen_no,
+                                       change_rate=change_rate, tier_override=_cached_tier):
                 # SmartMoney에 등록 성공 → _pending_buy에서 제거 (즉시매수 방지)
                 del self._pending_buy[code]
 
@@ -2063,6 +2087,27 @@ class TradingEngine(QMainWindow):
             # 기존 즉시매수 모드
             logger.info(f"✅ [조건식] {stock_name}({code}) 편입 → 매수 대기열 등록 (조건식: {cond_name})")
             self._log_condition_signal(code, stock_name, cond_name, "⏳ 대기", "체결가 수신 대기 중")
+
+    # [v10.5.1 Fix/H2] 지연 조건식 편입 헬퍼 ─────────────────────
+    def _fire_deferred_condition(self, code, cond_name, cond_index, timer):
+        """지연 예약된 조건식 편입을 실행하고, 완료된 타이머를 목록에서 제거."""
+        try:
+            self._deferred_condition_timers.remove(timer)
+        except ValueError:
+            pass
+        self._on_real_condition(code, "I", cond_name, cond_index)
+
+    def _cancel_deferred_conditions(self):
+        """예약된 지연 조건식 편입 타이머를 모두 취소.
+        엔진 종료(DISCONNECT/SHUTDOWN) 또는 매매 중지 시 호출."""
+        cancelled = 0
+        for timer in self._deferred_condition_timers:
+            if timer.isActive():
+                timer.stop()
+                cancelled += 1
+        self._deferred_condition_timers.clear()
+        if cancelled:
+            logger.info(f"🛑 [조건식] 지연 편입 타이머 {cancelled}개 취소")
 
     # [v10.2 추가] 프로그램 재시작 시 기존 편입 종목 복구용
     def _on_receive_tr_condition(self, screen_no, code_list, cond_name, cond_index, next_val):
@@ -2098,9 +2143,15 @@ class TradingEngine(QMainWindow):
         logger.info(f"📥 [조건식] '{cond_name}' 초기 종목 {len(codes)}개 수신, {len(valid_codes)}개 편입 예정")
 
         # ⭐️ 핵심: 키움 API 과부하(먹통) 방지를 위해 0.2초(200ms) 간격으로 분산 처리
+        # [v10.5.1 Fix/H2] QTimer.singleShot → QTimer 객체로 교체
+        # 엔진 종료/매매 중지 시 _cancel_deferred_conditions()로 일괄 취소 가능
         for i, code in enumerate(valid_codes):
-            # lambda 변수 캡처를 통해 각 종목이 0.2초, 0.4초, 0.6초 뒤에 순차적으로 실행됨
-            QTimer.singleShot(i * 200, lambda c=code, n=cond_name, idx=cond_index: self._on_real_condition(c, "I", n, idx))
+            timer = QTimer(self)
+            timer.setSingleShot(True)
+            timer.timeout.connect(lambda c=code, n=cond_name, idx=cond_index, t=timer:
+                                  self._fire_deferred_condition(c, n, idx, t))
+            self._deferred_condition_timers.append(timer)
+            timer.start(i * 200)
 
     def _on_real_data(self, code, real_type, real_data):
         # [v8.0] 지수 실시간 수신 (KOSPI/KOSDAQ) — 종목 처리와 완전히 분리
@@ -2246,100 +2297,112 @@ class TradingEngine(QMainWindow):
                 return
 
             info = self._pending_buy.pop(code)
-            stock_name = self.kiwoom.dynamicCall("GetMasterCodeName(QString)", code)
-            cfg = self.config_mgr.config
-
-            # [Fix v9.1] invest_type에 따라 투자금 계산 방식 분리
-            # orderable_amount는 _sync_routine에서 이미 locked_deposit 차감 반영됨
-            available = max(0, self.orderable_amount if self.orderable_amount > 0 else self.deposit)
-            invest_type = cfg.get("invest_type", "비중(%)")
-            invest_val = cfg.get("invest", 20)
-
-            if invest_type == "비중(%)":
-                inv_amt = available * invest_val / 100.0
-            else:
-                inv_amt = min(invest_val, available)
-
-            total_qty = int(inv_amt // curr_p)
-            if total_qty <= 0:
-                reason = f"예수금 부족 (가용={available:,}, 현재가={curr_p:,})"
-                logger.warning(f"🚫 [매수] {stock_name}({code}) 스킵: 수량 0주 ({reason})")
-                self._log_condition_signal(code, stock_name, info.get('cond_name', ''), "스킵", reason)
-                self.kiwoom.dynamicCall("SetRealRemove(QString, QString)", info['screen_no'], code)
-                return
-
-            # [v7.5] 분할매수 처리
-            split_state = None
-            qty = total_qty
+            # [v10.5.1 Fix/M3] pop 후 예외 발생 시 실시간 구독이 해제되지 않는 문제 방어
+            # try-except에서 실패 시 finally에서 SetRealRemove를 보장합니다.
+            _buy_success = False
             try:
-                if cfg.get("split_buy_enabled") and total_qty >= 2:
-                    ratios = cfg.get("split_buy_ratios", [30, 70])
-                    r1 = max(1, int(total_qty * ratios[0] / 100))
-                    qty = r1  # 1차 수량
-                    split_state = {
-                        "total": total_qty, "entry_price": curr_p,
-                        "rounds": [
-                            {"qty": r1, "done": True, "pct": 0},
-                            {"qty": total_qty - r1, "done": False, "pct": cfg.get("split_buy_confirm_pct", 1.0)},
-                        ]
-                    }
-                    if len(ratios) >= 3 and cfg.get("split_buy_rounds", 2) >= 3:
-                        r2 = max(1, int(total_qty * ratios[1] / 100))
-                        r3 = total_qty - r1 - r2
-                        split_state["rounds"] = [
-                            {"qty": r1, "done": True, "pct": 0},
-                            {"qty": r2, "done": False, "pct": cfg.get("split_buy_confirm_pct", 1.0)},
-                            {"qty": max(1, r3), "done": False, "pct": cfg.get("split_buy_confirm_pct_3rd", 2.0)},
-                        ]
-                    logger.info(f"📊 [분할매수] {stock_name}({code}) 총{total_qty}주 → 1차:{qty}주")
-            except Exception as e:
-                logger.error(f"❌ [분할매수] 설정 오류, 전량매수로 진행: {e}")
-                qty = total_qty
+                stock_name = self.kiwoom.dynamicCall("GetMasterCodeName(QString)", code)
+                cfg = self.config_mgr.config
+
+                # [Fix v9.1] invest_type에 따라 투자금 계산 방식 분리
+                # orderable_amount는 _sync_routine에서 이미 locked_deposit 차감 반영됨
+                available = max(0, self.orderable_amount if self.orderable_amount > 0 else self.deposit)
+                invest_type = cfg.get("invest_type", "비중(%)")
+                invest_val = cfg.get("invest", 20)
+
+                if invest_type == "비중(%)":
+                    inv_amt = available * invest_val / 100.0
+                else:
+                    inv_amt = min(invest_val, available)
+
+                total_qty = int(inv_amt // curr_p)
+                if total_qty <= 0:
+                    reason = f"예수금 부족 (가용={available:,}, 현재가={curr_p:,})"
+                    logger.warning(f"🚫 [매수] {stock_name}({code}) 스킵: 수량 0주 ({reason})")
+                    self._log_condition_signal(code, stock_name, info.get('cond_name', ''), "스킵", reason)
+                    return  # finally에서 SetRealRemove 실행됨
+
+                # [v7.5] 분할매수 처리
                 split_state = None
+                qty = total_qty
+                try:
+                    if cfg.get("split_buy_enabled") and total_qty >= 2:
+                        ratios = cfg.get("split_buy_ratios", [30, 70])
+                        r1 = max(1, int(total_qty * ratios[0] / 100))
+                        qty = r1  # 1차 수량
+                        split_state = {
+                            "total": total_qty, "entry_price": curr_p,
+                            "rounds": [
+                                {"qty": r1, "done": True, "pct": 0},
+                                {"qty": total_qty - r1, "done": False, "pct": cfg.get("split_buy_confirm_pct", 1.0)},
+                            ]
+                        }
+                        if len(ratios) >= 3 and cfg.get("split_buy_rounds", 2) >= 3:
+                            r2 = max(1, int(total_qty * ratios[1] / 100))
+                            r3 = total_qty - r1 - r2
+                            split_state["rounds"] = [
+                                {"qty": r1, "done": True, "pct": 0},
+                                {"qty": r2, "done": False, "pct": cfg.get("split_buy_confirm_pct", 1.0)},
+                                {"qty": max(1, r3), "done": False, "pct": cfg.get("split_buy_confirm_pct_3rd", 2.0)},
+                            ]
+                        logger.info(f"📊 [분할매수] {stock_name}({code}) 총{total_qty}주 → 1차:{qty}주")
+                except Exception as e:
+                    logger.error(f"❌ [분할매수] 설정 오류, 전량매수로 진행: {e}")
+                    qty = total_qty
+                    split_state = None
 
-            self.locked_deposit += curr_p * qty
-            port_entry = {
-                'name': stock_name, 'buy_price': 0, 'current_price': curr_p, 'high_price': curr_p,
-                'qty': 0, 'status': 'BUY_REQ', 'sell_ordered': False, 'screen_no': info['screen_no'],
-                'locked_amount': curr_p * qty, 'is_manual': False, 'cond_name': info['cond_name'],
-                'last_price_ts': time.time()
-            }
-            if split_state:
-                port_entry['split_buy'] = split_state
-            # [v7.6] 분할매도 초기화 — TS 독립형 (Option C)
-            try:
-                if cfg.get("split_sell_enabled"):
-                    ratio1     = cfg.get("split_sell_ratio1", 50)
-                    offset     = cfg.get("split_sell_offset", 1.5)
-                    c_name     = info.get('cond_name', '')  # [Fix] c_name 미정의 버그 수정
-                    profit_pct = self.config_mgr.get_condition_param(c_name, "profit") or 2.3
-                    port_entry['split_sell'] = {
-                        "initial_qty": total_qty,
-                        "ratio1":      ratio1,      # 1차 매도 비중 (%)
-                        "offset":      offset,      # 2차 트리거 = profit_pct + offset
-                        "t1_done":     False,       # 1차 익절% 도달 여부
-                        "t2_done":     False,       # 2차 (익절+offset%) 도달 여부
-                        "profit_pct":  profit_pct,  # 1차 트리거 = 익절%
-                    }
+                self.locked_deposit += curr_p * qty
+                port_entry = {
+                    'name': stock_name, 'buy_price': 0, 'current_price': curr_p, 'high_price': curr_p,
+                    'qty': 0, 'status': 'BUY_REQ', 'sell_ordered': False, 'screen_no': info['screen_no'],
+                    'locked_amount': curr_p * qty, 'is_manual': False, 'cond_name': info['cond_name'],
+                    'last_price_ts': time.time()
+                }
+                if split_state:
+                    port_entry['split_buy'] = split_state
+                # [v7.6] 분할매도 초기화 — TS 독립형 (Option C)
+                try:
+                    if cfg.get("split_sell_enabled"):
+                        ratio1     = cfg.get("split_sell_ratio1", 50)
+                        offset     = cfg.get("split_sell_offset", 1.5)
+                        c_name     = info.get('cond_name', '')  # [Fix] c_name 미정의 버그 수정
+                        profit_pct = self.config_mgr.get_condition_param(c_name, "profit") or 2.3
+                        port_entry['split_sell'] = {
+                            "initial_qty": total_qty,
+                            "ratio1":      ratio1,      # 1차 매도 비중 (%)
+                            "offset":      offset,      # 2차 트리거 = profit_pct + offset
+                            "t1_done":     False,       # 1차 익절% 도달 여부
+                            "t2_done":     False,       # 2차 (익절+offset%) 도달 여부
+                            "profit_pct":  profit_pct,  # 1차 트리거 = 익절%
+                        }
+                except Exception as e:
+                    logger.error(f"❌ [분할매도] 초기화 오류: {e}")
+                self.portfolio[code] = port_entry
+
+                # [Critical Fix] 매수 주문은 반드시 TR 전용 화면번호를 사용해야 합니다.
+                order_screen = self._next_tr_screen()
+                self.tr_scheduler.request_order(
+                    rqname="실시간매수", screen_no=order_screen, acc_no=self.account,
+                    order_type=1, code=code, qty=qty, price=0,
+                    hoga_gb=cfg.get("order_type", "03"), org_order_no=""
+                )
+                self._bot_bought_codes.add(code)
+                self._save_bot_state()
+                _buy_success = True  # 매수 주문 성공 → 실시간 구독 유지
+                if split_state:
+                    order_detail = f"[분할1차] {qty}주×{curr_p:,}={curr_p*qty:,}원 (계획:{total_qty}주)"
+                else:
+                    order_detail = f"{qty}주×{curr_p:,}={curr_p*qty:,}원"
+                logger.info(f"📈 [매수] {stock_name}({code}) 주문 발행: {order_detail} (조건식: {info['cond_name']})")
+                self._log_condition_signal(code, stock_name, info['cond_name'], "✅ 매수주문", order_detail)
             except Exception as e:
-                logger.error(f"❌ [분할매도] 초기화 오류: {e}")
-            self.portfolio[code] = port_entry
-
-            # [Critical Fix] 매수 주문은 반드시 TR 전용 화면번호를 사용해야 합니다.
-            order_screen = self._next_tr_screen()
-            self.tr_scheduler.request_order(
-                rqname="실시간매수", screen_no=order_screen, acc_no=self.account,
-                order_type=1, code=code, qty=qty, price=0,
-                hoga_gb=cfg.get("order_type", "03"), org_order_no=""
-            )
-            self._bot_bought_codes.add(code)
-            self._save_bot_state()
-            if split_state:
-                order_detail = f"[분할1차] {qty}주×{curr_p:,}={curr_p*qty:,}원 (계획:{total_qty}주)"
-            else:
-                order_detail = f"{qty}주×{curr_p:,}={curr_p*qty:,}원"
-            logger.info(f"📈 [매수] {stock_name}({code}) 주문 발행: {order_detail} (조건식: {info['cond_name']})")
-            self._log_condition_signal(code, stock_name, info['cond_name'], "✅ 매수주문", order_detail)
+                logger.error(f"❌ [매수] {code} 매수 처리 중 예외: {e}")
+            finally:
+                if not _buy_success:
+                    try:
+                        self.kiwoom.dynamicCall("SetRealRemove(QString, QString)", info.get('screen_no', 'ALL'), code)
+                    except Exception:
+                        pass
             return
 
         if code not in self.portfolio:
@@ -2885,7 +2948,15 @@ class TradingEngine(QMainWindow):
                     )
 
             elif "-매도" in buy_sell and exec_qty > 0:
-                p = self.portfolio[code]
+                # [v10.5.1 Fix/M2] 다중 부분체결 빠르게 연속 도착 시
+                # 이전 체결에서 이미 del portfolio[code] 했을 수 있으므로 방어적 조회
+                p = self.portfolio.get(code)
+                if not p:
+                    logger.warning(f"⚠️ [매도체결] {code} 포트폴리오에서 이미 제거됨 (중복 체결 이벤트 무시)")
+                    if unexec == 0 and order_no in self.unexecuted_orders:
+                        del self.unexecuted_orders[order_no]
+                        self._order_exec_cum.pop(order_no, None)
+                    return
                 realized = calc_sell_cost(p['buy_price'], exec_price, exec_qty, self.is_mock)
                 self.today_realized_profit += realized
 
