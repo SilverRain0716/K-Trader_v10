@@ -2984,11 +2984,31 @@ class TradingEngine(QMainWindow):
         curr = time.time()
         for o_no, info in list(self.unexecuted_orders.items()):
             if curr - info['time'] > 60:
+                # [v10.5.1 Fix/H5] 이미 취소 발행된 주문은 중복 발행하지 않음
+                if info.get('_cancel_requested'):
+                    # 취소 발행 후 120초(60+60) 경과해도 _on_chejan 미수신 → 안전하게 정리
+                    if curr - info.get('_cancel_requested_ts', 0) > 60:
+                        code = info['code']
+                        logger.warning(f"🧹 [미체결] {code} 취소 응답 미수신 60초 초과 → 강제 정리 (주문번호={o_no})")
+                        if info.get('_cancel_type') == 3:
+                            self.locked_deposit = max(0, self.locked_deposit - info.get('locked_amount', 0))
+                        del self.unexecuted_orders[o_no]
+                        self._order_exec_cum.pop(o_no, None)
+                    continue
+
                 o_type = 3 if "+매수" in info['type'] else 4
                 self.tr_scheduler.request_order(
                     "미체결취소", self._next_tr_screen(), self.account,
                     o_type, info['code'], info['qty'], 0, "00", o_no  # [v10.2/M3] 취소 주문은 "00" 통일
                 )
+
+                # [v10.5.1 Fix/H5] 취소 발행 플래그 표시 (즉시 삭제하지 않음)
+                # _on_chejan(status="취소")에서 orig_info를 참조하여 locked_deposit을
+                # 정확히 복구할 수 있도록 unexecuted_orders에 유지합니다.
+                info['_cancel_requested'] = True
+                info['_cancel_requested_ts'] = curr
+                info['_cancel_type'] = o_type
+
                 if o_type == 4 and info['code'] in self.portfolio:
                     code = info['code']
                     self.portfolio[code]['sell_ordered'] = False
@@ -3005,8 +3025,12 @@ class TradingEngine(QMainWindow):
                     except Exception as e:
                         logger.error(f"❌ [매도취소] {code} pending_sell 복구 실패: {e}")
                 elif o_type == 3:
-                    self.locked_deposit = max(0, self.locked_deposit - info.get('locked_amount', 0))
-                del self.unexecuted_orders[o_no]
+                    # [v10.5.1 Fix/H5] 매수취소 시 locked_deposit 즉시 복구는 하지 않음
+                    # → _on_chejan(status="취소")에서 orig_info 기반으로 정확히 복구합니다.
+                    # 기존에는 여기서 locked_amount를 차감하고 unexecuted_orders를 삭제했으나,
+                    # _on_chejan에서 cancelled_qty 역산 시 orig_info가 빈 dict이 되어
+                    # locked_deposit 복구가 누락되는 버그가 있었습니다.
+                    pass
 
 
 def _cleanup_old_logs(logs_dir, max_days=30):
