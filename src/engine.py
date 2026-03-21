@@ -1,5 +1,17 @@
 """
 K-Trader - 매매 엔진 (백엔드 프로세스)
+[v10.5 수정사항 — except Exception: pass 일괄 정리]
+  - engine.py: except Exception: pass 18곳 → 등급별 로깅 추가
+    A등급(자금/주문): logger.error + 변수 덤프 (L1069, 2890, 2993)
+    A등급(기능): logger.warning (L558, 1636)
+    B등급(핵심로직): logger.debug/warning (L1081, 2178, 2202)
+    C등급(API cleanup): logger.debug (10곳)
+  - ipc.py: 구조적 버그 2건 수정
+    _handle_client: except Exception: break → 소켓 오류만 break, 기타 continue
+    Engine_IPCClient.run: json.loads JSONDecodeError 미보호 → 명시 catch
+    send_command/send_state: logger.debug 추가
+  - utils.py: __version__ "10.4.0" → "10.5.0"
+  - main.py: 헤더 "v8.0.0" → "v10.5.0"
 [v10.4 수정사항 — 코드 리뷰 기반 안정화]
   - Critical(C1): _on_chejan 매수취소 시 취소 수량 역산 수정 (원주문-누적체결 기반)
   - High(H1): __version__ "8.0.0"→"10.4.0" 통일 (utils.py)
@@ -555,8 +567,8 @@ class SmartMoneyManager:
                 tier = "MID"
             else:
                 tier = "SMALL"
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"⚠️ [SM] {code} Tier 분류 실패 (기본값={tier}): {e}")
         return tier
 
     def _adjust_tier_by_volume(self, code: str, tier: str, daily_volume_krw: int) -> str:
@@ -985,8 +997,8 @@ class TradingEngine(QMainWindow):
                             try:
                                 self.kiwoom.dynamicCall("SendConditionStop(QString, QString, int)",
                                                        "0300", cond['name'], int(cond['idx']))
-                            except Exception:
-                                pass
+                            except Exception as e:
+                                logger.debug(f"[조건식] SendConditionStop 해제 무시: {cond['name']} — {e}")
                             try:
                                 self.kiwoom.dynamicCall("SendCondition(QString, QString, int, int)",
                                                        self._next_real_screen(), cond['name'], int(cond['idx']), 1)
@@ -1066,8 +1078,8 @@ class TradingEngine(QMainWindow):
             # 총예수금/출금가능은 TR 값이 없을 때만 deposit을 사용
             self.deposit_total = int(self.deposit_total) if int(self.deposit_total) > 0 else int(self.deposit)
             self.withdrawable_amount = int(self.withdrawable_amount) if int(self.withdrawable_amount) > 0 else int(self.deposit)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.error(f"❌ [sync] 예수금 재계산 오류: {e} (orderable={getattr(self, 'orderable_amount', '?')}, locked={getattr(self, 'locked_deposit', '?')})")
 
         # 가격/예수금 동기화 품질(=UI 정확성)용 메타데이터
         now_ts = time.time()
@@ -1078,8 +1090,8 @@ class TradingEngine(QMainWindow):
                     ts = d.get('last_price_ts')
                     if not ts or (now_ts - float(ts)) > 5.0:
                         price_stale_codes.append(c)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"⚠️ [sync] 가격 stale 체크 오류: {e}")
 
         # [Fix E] 장중 보유종목 실시간 시세 구독 자동 복구
         # 30초 이상 가격 갱신이 없으면 구독이 끊긴 것으로 판단하고 재등록합니다.
@@ -1223,8 +1235,8 @@ class TradingEngine(QMainWindow):
                         self._eod_shutdown_signaled = True
                         self.ipc_client.send_state({"eod_shutdown": True})
                         time.sleep(0.5)  # UI가 신호 수신할 시간 확보
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug(f"[마감] EOD 신호 IPC 전송 실패 (무시): {e}")
                     self._execute_shutdown("장 마감 자동 종료")
         except Exception as e:
             logger.error(f"❌ [마감] EOD 감지 오류: {e}")
@@ -1253,8 +1265,8 @@ class TradingEngine(QMainWindow):
                 if code not in self.portfolio:
                     try:
                         self.kiwoom.dynamicCall("SetRealRemove(QString, QString)", "ALL", code)
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug(f"[SM] SetRealRemove 해제 무시: {code} — {e}")
         except Exception as e:
             logger.error(f"❌ [SM] 타임아웃 정리 오류: {e}")
 
@@ -1278,8 +1290,8 @@ class TradingEngine(QMainWindow):
                 screen_no = data.get('screen_no', 'ALL')
                 try:
                     self.kiwoom.dynamicCall("SetRealRemove(QString, QString)", screen_no, code)
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"[정리] SetRealRemove 해제 무시: {code} — {e}")
                 del self.portfolio[code]
                 logger.warning(f"🧹 [정리] {name}({code}) BUY_REQ 유령 항목 제거 (체결 미수신 {buy_req_timeout}초 초과, locked 복구: {locked:,}원)")
         except Exception as e:
@@ -1476,8 +1488,8 @@ class TradingEngine(QMainWindow):
                             try:
                                 self.kiwoom.dynamicCall("SetRealRemove(QString, QString)",
                                                        info['screen_no'], code)
-                            except Exception:
-                                pass
+                            except Exception as e:
+                                logger.debug(f"[조건식] SetRealRemove 해제 무시: {code} — {e}")
                         self.locked_deposit = max(0, self.locked_deposit - info.get('locked_amount', 0) if info else self.locked_deposit)
                         logger.info(f"🗑️ [조건식] {name} 제거 → {code} 매수대기 취소")
                     self.active_conditions = [c for c in self.active_conditions if c != name]
@@ -1540,8 +1552,8 @@ class TradingEngine(QMainWindow):
                     try:
                         self.kiwoom.dynamicCall("SendConditionStop(QString, QString, int)",
                                                "0300", cond['name'], int(cond['idx']))
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug(f"[DISCONNECT] SendConditionStop 해제 무시: {cond['name']} — {e}")
                 self.kiwoom.dynamicCall("CommTerminate()")
             except Exception as e:
                 logger.warning(f"⚠️ [접속 해제] CommTerminate 오류 (무시): {e}")
@@ -1633,8 +1645,8 @@ class TradingEngine(QMainWindow):
                         name = self.kiwoom.dynamicCall("GetMasterCodeName(QString)", code)
                         if name:
                             self._bl_cache[code] = name
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning(f"⚠️ [블랙리스트] 종목명 캐시 보강 실패: {e}")
         else:
             self.current_status = "LOGIN_FAILED"
 
@@ -1942,8 +1954,8 @@ class TradingEngine(QMainWindow):
                 if code not in self.portfolio:
                     try:
                         self.kiwoom.dynamicCall("SetRealRemove(QString, QString)", "ALL", code)
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug(f"[조건식] SetRealRemove 이탈 해제 무시: {code} — {e}")
             return  # 편출(D)은 정상 무시 — 로그 불필요
 
         if code in self.portfolio:
@@ -2043,8 +2055,8 @@ class TradingEngine(QMainWindow):
                 if info:
                     try:
                         self.kiwoom.dynamicCall("SetRealRemove(QString, QString)", info.get('screen_no', 'ALL'), code)
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug(f"[SM] SetRealRemove 한도초과 해제 무시: {code} — {e}")
                 logger.info(f"🚫 [SM] {stock_name}({code}) SM 감시 한도 초과 → 매수 보류 (조건식: {cond_name})")
                 self._log_condition_signal(code, stock_name, cond_name, "스킵", "SM한도초과 → 매수보류")
         else:
@@ -2175,8 +2187,8 @@ class TradingEngine(QMainWindow):
                                         f"[SM] 📊 {tracker.name}({code}) "
                                         f"Tier 보정: {old_tier}→{new_tier} "
                                         f"(거래대금={cum_vol_krw/100_000_000:.0f}억)")
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            logger.debug(f"⚠️ [SM] {code} Tier 거래대금 보정 실패: {e}")
 
                     if tick_price > 0 and tick_vol > 0:
                         _sm_cached_price = tick_price  # [v10.4/H5] fall-through용 캐싱
@@ -2199,8 +2211,8 @@ class TradingEngine(QMainWindow):
                                     f"ratio={tracker.signal_strength:.0%} "
                                     f"prev={prev_sig} price={tick_price:,}"
                                 )
-                            except Exception:
-                                pass
+                            except Exception as e:
+                                logger.debug(f"⚠️ [SM] {code} 신호변경 DB 기록 실패: {e}")
 
                         # ── [v10.3] should_buy(): BUY 신호 시 매수 ──
                         if tracker.signal == "BUY" and code not in self.portfolio:
@@ -2583,8 +2595,8 @@ class TradingEngine(QMainWindow):
             self.tick_monitor.unwatch(code, "보유한도 초과")
             try:
                 self.kiwoom.dynamicCall("SetRealRemove(QString, QString)", screen_no or "ALL", code)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"[SM] SetRealRemove 보유한도 해제 무시: {code} — {e}")
             return
 
         if curr_price <= 0:
@@ -2887,8 +2899,8 @@ class TradingEngine(QMainWindow):
                         self._orderable_from_tr = max(0, self._orderable_from_tr + recovered)
                     self.orderable_amount = max(0, self._orderable_from_tr - self.locked_deposit) if hasattr(self, '_orderable_from_tr') and self._orderable_from_tr > 0 else max(0, self.orderable_amount + recovered)
                     self.withdrawable_amount = max(0, self.withdrawable_amount + recovered)
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.error(f"❌ [매도체결] {code} 예수금 복구 실패: {e} (buy_price={p.get('buy_price')}, exec_qty={exec_qty}, realized={realized})")
 
                 p['qty'] = max(0, p['qty'] - exec_qty)
                 self._pending_sell_qty[code] = max(0, self._pending_sell_qty.get(code, 0) - exec_qty)
@@ -2990,8 +3002,8 @@ class TradingEngine(QMainWindow):
                             self._pending_sell_qty[code] = max(0, self._pending_sell_qty.get(code, 0) - unexec_qty)
                             if self._pending_sell_qty.get(code, 0) == 0:
                                 self._pending_sell_qty.pop(code, None)
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.error(f"❌ [매도취소] {code} pending_sell 복구 실패: {e}")
                 elif o_type == 3:
                     self.locked_deposit = max(0, self.locked_deposit - info.get('locked_amount', 0))
                 del self.unexecuted_orders[o_no]
@@ -3006,8 +3018,8 @@ def _cleanup_old_logs(logs_dir, max_days=30):
             try:
                 if os.path.getmtime(f) < cutoff:
                     os.remove(f)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"[로그정리] 파일 삭제 실패 (무시): {f} — {e}")
 
 
 def run_engine(ipc_port):
