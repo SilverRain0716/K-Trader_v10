@@ -66,7 +66,6 @@ import json
 import time
 import datetime
 import logging
-import traceback
 from collections import deque
 from PyQt5.QtWidgets import QMainWindow, QApplication
 from PyQt5.QAxContainer import QAxWidget
@@ -2424,7 +2423,7 @@ class TradingEngine(QMainWindow):
                                 if (data['high_price'] - curr_p) / data['high_price'] * 100 >= ts_drop:
                                     ss['t2_done'] = True
                                     data['sell_ordered'] = True
-                                    reason = f"📉 T.S 발동 (분할잔여)"
+                                    reason = "📉 T.S 발동 (분할잔여)"
                                     data['_last_sell_reason'] = reason
                                     self._execute_sell(code, reason, sellable)
                         else:
@@ -2493,15 +2492,13 @@ class TradingEngine(QMainWindow):
     # ── [v10.0] SmartMoney 매수 신호 처리 ──────────────────
     def _handle_smartmoney_buy(self, code: str, tracker, curr_price: int):
         """
-        SmartMoneyTracker에서 BUY_A/BUY_B 신호 발생 시 매수 실행.
+        [v10.3] SmartMoneyTracker에서 BUY 신호 발생 시 매수 실행.
 
-        3중 자물쇠:
-          1. watchlist에 있는가? → SmartMoneyManager.is_watching() (이미 확인됨)
-          2. 미보유 AND 최대보유 미초과? → 여기서 확인
-          3. signal이 BUY_A 또는 BUY_B? → 호출 전에 확인됨
+        2중 자물쇠:
+          1. 미보유 AND 최대보유 미초과? → 여기서 확인
+          2. signal이 BUY? → 호출 전에 확인됨
 
-        BUY_A: 풀 비중(100%) 진입
-        BUY_B: 반 비중(50%) 진입
+        BUY: 풀 비중(100%) 진입 (BUY_B 폐기)
         """
         name = tracker.name
         cond_name = tracker.cond_name
@@ -2614,10 +2611,10 @@ class TradingEngine(QMainWindow):
 
         order_detail = (
             f"[{signal_label}] {qty}주×{curr_price:,}={curr_price * qty:,}원 "
-            f"(score={tracker.signal_strength:+.3f}, 비중={weight*100:.0f}%)"
+            f"(buy_ratio={tracker.signal_strength:.0%})"
         )
         logger.info(f"📈 [SM매수] {name}({code}) 주문 발행: {order_detail}")
-        self._log_condition_signal(code, name, cond_name, f"✅ SM매수", order_detail)
+        self._log_condition_signal(code, name, cond_name, "✅ SM매수", order_detail)
         self.tick_monitor._log(f"[SM] 📈 {name}({code}) {order_detail}")
 
     # [v10.3] _handle_smartmoney_danger 삭제 — DANGER 매도 폐기
