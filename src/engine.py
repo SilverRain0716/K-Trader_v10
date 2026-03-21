@@ -287,6 +287,10 @@ class SmartMoneyTracker:
         self._start_ts = time.time()
         self._signal_history = []
 
+        # ── [v10.3 Fix] p90 임계값 캐싱 (매 틱 sorted() 방지) ──
+        self._cached_big_threshold = self._big_tick_default
+        self._cached_big_threshold_ts = 0.0  # 마지막 계산 시각
+
     # ── 외부에서 읽는 속성 ──────────────────────────────────
     @property
     def signal(self) -> str:
@@ -340,11 +344,21 @@ class SmartMoneyTracker:
             self._signal = "NEUTRAL"
             return
 
-        # ── 15초 윈도우 내 틱 수집 ──
+        # ── [v10.3 Fix] 15초 윈도우 내 틱 수집 — 역순 순회 최적화 ──
+        # deque는 시간순 정렬이므로 최신(오른쪽)부터 역순으로 순회하다가
+        # cutoff 미만인 시점에서 중단하면 전체 5000개를 순회하지 않아도 됨
         cutoff = now - BUY_WINDOW_SEC
-        window_ticks = [(ts, qty, ib) for ts, qty, ib in self._tick_buffer if ts >= cutoff]
+        window_ticks = []
+        for ts, qty, ib in reversed(self._tick_buffer):
+            if ts < cutoff:
+                break
+            window_ticks.append((ts, qty, ib))
 
         if len(window_ticks) < 10:
+            # [v10.3 Fix] 데이터 부족 시 디버그 변수 초기화 (UI 오표시 방지)
+            self._last_buy_ratio = 0.0
+            self._last_big_buy_freq = 0.0
+            self._last_relative = 0.0
             self._signal = "NEUTRAL"
             return
 
@@ -365,7 +379,7 @@ class SmartMoneyTracker:
         relative = buy_ratio - avg_5m
 
         # ── 조건 3: 대량 매수 빈도 ──
-        big_threshold = self._get_big_tick_threshold()
+        big_threshold = self._get_big_tick_threshold(now)
         big_buy_count = sum(1 for _, qty, ib in window_ticks if qty >= big_threshold and ib)
         big_buy_freq = big_buy_count / len(window_ticks)
 
@@ -391,13 +405,24 @@ class SmartMoneyTracker:
         if self._signal != prev_signal:
             self._on_signal_change(prev_signal, self._signal)
 
-    def _get_big_tick_threshold(self) -> int:
-        """대량 틱 기준: 50틱 이상이면 상위 10%(p90), 아니면 Tier 기본값."""
+    def _get_big_tick_threshold(self, now: float = None) -> int:
+        """대량 틱 기준: 50틱 이상이면 상위 10%(p90), 아니면 Tier 기본값.
+
+        [v10.3 Fix] 3초 캐싱 — 매 틱마다 5000개 sorted() 방지.
+        p90 값은 틱 몇 개로는 거의 변하지 않으므로 3초면 충분.
+        """
+        if now is None:
+            now = time.time()
+        # 캐시가 3초 이내면 재사용
+        if (now - self._cached_big_threshold_ts) < 3.0:
+            return self._cached_big_threshold
         if self._tick_count >= BIG_TICK_WARMUP_COUNT:
             qtys = sorted([qty for _, qty, _ in self._tick_buffer])
             if qtys:
                 p90_idx = int(len(qtys) * 0.90)
-                return max(1, qtys[min(p90_idx, len(qtys) - 1)])
+                self._cached_big_threshold = max(1, qtys[min(p90_idx, len(qtys) - 1)])
+                self._cached_big_threshold_ts = now
+                return self._cached_big_threshold
         return self._big_tick_default
 
     # ── 신호 변경 이벤트 ──────────────────────────────────────
@@ -2722,11 +2747,26 @@ class TradingEngine(QMainWindow):
                 self.unexecuted_orders[order_no]['qty'] = unexec
 
         if status == "취소" and "+매수" in buy_sell:
+            # [v10.3 Fix] 부분체결+잔량취소 시 locked_deposit 잠김 해소
+            # 기존: qty==0(전량취소)일 때만 locked 반환 → 부분체결 후 취소 시 잔량 금액이 잠김
+            # 수정: 취소된 미체결 잔량 금액을 무조건 차감 후, qty==0이면 포트폴리오도 삭제
+            cancelled_qty = unexec  # 취소 이벤트의 902(미체결수량) = 취소된 수량
+            if cancelled_qty > 0 and code in self.portfolio:
+                # 취소된 잔량의 예상 금액 = 현재가(또는 매수가) × 취소수량
+                est_price = self.portfolio[code].get('current_price') or self.portfolio[code].get('buy_price', 0)
+                unlock_amt = est_price * cancelled_qty
+                self.locked_deposit = max(0, self.locked_deposit - unlock_amt)
+                if hasattr(self, '_orderable_from_tr') and self._orderable_from_tr > 0:
+                    self.orderable_amount = max(0, self._orderable_from_tr - self.locked_deposit)
+                logger.info(
+                    f"🔓 [매수취소] {code} 미체결 {cancelled_qty}주 취소 → "
+                    f"locked {unlock_amt:,}원 반환 (잔여 locked={self.locked_deposit:,})"
+                )
             if code in self.portfolio and self.portfolio[code]['qty'] == 0:
-                self.locked_deposit = max(0, self.locked_deposit - self.unexecuted_orders.get(order_no, {}).get('locked_amount', 0))
                 self.kiwoom.dynamicCall("SetRealRemove(QString, QString)", self.portfolio[code].get('screen_no', "ALL"), code)
                 del self.portfolio[code]
-                self.unexecuted_orders.pop(order_no, None)
+            self.unexecuted_orders.pop(order_no, None)
+            self._order_exec_cum.pop(order_no, None)
 
         elif status == "체결" and code in self.portfolio:
             exec_price = safe_int(self.kiwoom.dynamicCall("GetChejanData(int)", 910))
@@ -2908,6 +2948,8 @@ class TradingEngine(QMainWindow):
 
         if unexec == 0 and order_no in self.unexecuted_orders:
             del self.unexecuted_orders[order_no]
+            # [v10.3 Fix] 주문 완료 시 누적 체결량 추적 딕셔너리도 정리 (메모리 누수 방지)
+            self._order_exec_cum.pop(order_no, None)
 
     def _check_unexecuted_orders(self):
         curr = time.time()
