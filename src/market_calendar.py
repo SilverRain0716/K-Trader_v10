@@ -61,7 +61,11 @@ class MarketCalendar:
         ]
         for m, d in defaults:
             self.holidays.add(datetime.date(year, m, d))
-        self.holidays.add(datetime.date(year, 12, 31))
+        # [v10.5.1 Fix/H3] 12/31 무조건 휴장 처리 삭제
+        # 한국 증시에서 12/31이 항상 휴장인 것은 아닙니다.
+        # v10.4/M5에서 API 측 동일 버그를 수정했으나, API 키 없는 환경의
+        # 기본 목록(_set_default_holidays)에도 동일 문제가 있었습니다.
+        # 12/31이 실제 공휴일이면 API 조회 결과에 포함됩니다.
 
         # [Fix #7] 음력 명절(설날·추석 연휴) 추가 — API 키 없을 때도 적용
         for m, d in self._LUNAR_HOLIDAYS.get(year, []):
