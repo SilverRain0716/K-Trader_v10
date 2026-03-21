@@ -5,7 +5,7 @@ K-Trader Master - 유틸리티 모듈
 import datetime
 import logging
 
-__version__ = "8.0.0"
+__version__ = "10.4.0"
 
 logger = logging.getLogger("ktrader")
 
