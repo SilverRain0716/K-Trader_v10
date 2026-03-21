@@ -476,6 +476,8 @@ class Notifier:
             subject=f"[K-Trader] 장 마감 리포트 {now.strftime('%Y-%m-%d')} | {realized_profit:+,}원",
             content=msg.replace("**", "").replace("━━━━━━━━━━━━━━━━━━━", "-" * 30)
         )
+
+    def notify_loss_limit(self, current_loss: int, limit: int):
         """일일 손실 한도 초과 경고."""
         msg = (
             f"🚨 **[긴급] 일일 손실 한도 경고!**\n"
