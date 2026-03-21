@@ -142,7 +142,7 @@ class SecretManager:
                 # 마이그레이션 실패 시 평문이라도 읽기
                 try:
                     return self._load_json_lenient(self.secrets_path)
-                except:
+                except Exception:
                     return {}
 
         # 2) 보호된 파일 로드
