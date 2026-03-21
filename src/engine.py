@@ -482,7 +482,7 @@ class SmartMoneyTracker:
             "warmed_up": self.is_warmed_up,
             "tier": self.tier,
             "big_tick_threshold": self._get_big_tick_threshold(),
-            "signal_history": self._signal_history[-10:],
+            "signal_history": list(self._signal_history)[-10:],
         }
 
 
