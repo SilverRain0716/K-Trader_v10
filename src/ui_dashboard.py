@@ -16,13 +16,13 @@ import threading
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QGridLayout, QGroupBox, QTabWidget, QPushButton, QLabel, QFrame,
-    QSpinBox, QDoubleSpinBox, QComboBox, QCheckBox, QLineEdit,
+    QSpinBox, QDoubleSpinBox, QComboBox, QLineEdit,
     QTextEdit, QTableWidget, QTableWidgetItem, QHeaderView,
     QListWidget, QListWidgetItem, QMessageBox, QSystemTrayIcon, QMenu, QAction,
-    QDialog, QSizePolicy
+    QDialog
 )
-from PyQt5.QtCore import QTimer, Qt, QRect, QPropertyAnimation, QEasingCurve, pyqtProperty, pyqtSignal
-from PyQt5.QtGui import QIcon, QColor, QFont, QBrush, QPainter, QPen
+from PyQt5.QtCore import QTimer, Qt, QPropertyAnimation, QEasingCurve, pyqtProperty, pyqtSignal
+from PyQt5.QtGui import QColor, QFont, QBrush, QPainter, QPen
 
 # PyInstaller --onedir 빌드 시 __file__은 _internal 폴더 안을 가리키므로
 # sys.executable(K-Trader.exe) 기준의 폴더를 사용합니다.
@@ -37,7 +37,7 @@ from src.config_manager import ConfigManager, SecretManager
 from src.market_calendar import MarketCalendar
 from src.notifications import Notifier
 from src.styles import DARK_THEME_QSS, COLORS, profit_color
-from src.utils import calc_sell_cost, get_user_data_dir, get_app_dir, resolve_db_path, __version__
+from src.utils import calc_sell_cost, get_app_dir, resolve_db_path, __version__
 from src.ipc import UI_IPCServer
 
 logger = logging.getLogger("ktrader")
@@ -1469,7 +1469,7 @@ class TradingUI(QMainWindow):
         self.orderable_label = QLabel("💳 주문가능: 0원")
         self.orderable_label.setStyleSheet(f"color: {COLORS['text_secondary']}; padding: 4px 8px;")
         self.pnl_label = QLabel("📊 실현손익: 0원")
-        self.pnl_label.setStyleSheet(f"padding: 4px 8px; font-weight: bold; font-size: 15px;")
+        self.pnl_label.setStyleSheet("padding: 4px 8px; font-weight: bold; font-size: 15px;")
 
         # [v8.0] 지수 표시 라벨 + 차트 버튼
         self.kospi_label = QLabel("KOSPI  --")
@@ -2334,7 +2334,7 @@ class TradingUI(QMainWindow):
 
     def _export_excel(self):
         """[v10.0 Perf] 매매 기록 엑셀 내보내기 — 백그라운드 스레드로 UI 블로킹 방지."""
-        from PyQt5.QtWidgets import QFileDialog, QMessageBox
+        from PyQt5.QtWidgets import QFileDialog
         import os
         default_name = f"K-Trader_매매기록_{datetime.datetime.now().strftime('%Y%m%d')}.xlsx"
         default_path = os.path.join(os.path.expanduser("~"), "Desktop", default_name)
@@ -2355,7 +2355,6 @@ class TradingUI(QMainWindow):
             except Exception:
                 ok = False
             # UI 갱신은 메인 스레드에서 실행해야 하므로 QTimer.singleShot 사용
-            from PyQt5.QtCore import QMetaObject, Qt as QtConst, Q_ARG
             QTimer.singleShot(0, lambda: self._on_export_done(ok, path, sender))
 
         t = threading.Thread(target=_worker, daemon=True)
