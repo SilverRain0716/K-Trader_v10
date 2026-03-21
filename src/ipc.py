@@ -34,8 +34,11 @@ class UI_IPCServer(QThread):
                 self._handle_client(conn)
             except socket.timeout:
                 continue
+            except (ConnectionResetError, ConnectionAbortedError, OSError):
+                break  # 소켓 오류 → 서버 루프 탈출
             except Exception as e:
-                break
+                logger.warning(f"⚠️ [IPC서버] 비소켓 오류 (재시도): {e}")
+                continue
 
     # [Fix #6] 버퍼 최대 크기 상수: 포트폴리오 JSON이 64KB를 초과하더라도
     #          버퍼가 무한히 커지지 않도록 10MB를 상한으로 설정.
