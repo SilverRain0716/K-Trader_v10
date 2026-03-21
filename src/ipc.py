@@ -83,6 +83,19 @@ class UI_IPCServer(QThread):
             except Exception as e:
                 logger.debug(f"⚠️ [IPC서버] 명령 전송 실패: {cmd} — {e}")
 
+    def stop(self):
+        """[v10.5.1 Fix/H1] IPC 서버 종료. UI 종료 시 호출하여 소켓을 안전하게 정리."""
+        self.running = False
+        if self.client_conn:
+            try:
+                self.client_conn.close()
+            except Exception:
+                pass
+        try:
+            self.server_socket.close()
+        except Exception:
+            pass
+
 
 class Engine_IPCClient(QThread):
     """매매 엔진에서 구동되는 TCP 클라이언트. UI로 상태를 전송합니다."""
