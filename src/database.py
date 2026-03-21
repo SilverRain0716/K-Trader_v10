@@ -36,6 +36,9 @@ class Database:
 
     def _connect(self):
         try:
+            # [v10.5.1/M6] check_same_thread=False: 현재 엔진은 PyQt5 메인 스레드에서만
+            # DB 접근하므로 문제 없으나, IPC 스레드 등에서 DB 접근 시 데이터 손상 위험.
+            # 멀티스레드 접근이 필요하면 스레드별 connection을 생성하거나 큐 기반으로 전환할 것.
             self.conn = sqlite3.connect(self.db_path, timeout=10, isolation_level=None, check_same_thread=False)
             self.conn.execute("PRAGMA journal_mode=WAL")
             self.conn.execute("PRAGMA busy_timeout=5000")
