@@ -1,5 +1,16 @@
 """
 K-Trader - 매매 엔진 (백엔드 프로세스)
+[v10.4 수정사항 — 코드 리뷰 기반 안정화]
+  - Critical(C1): _on_chejan 매수취소 시 취소 수량 역산 수정 (원주문-누적체결 기반)
+  - High(H1): __version__ "8.0.0"→"10.4.0" 통일 (utils.py)
+  - High(H2): MarketCalendar cache_path를 get_app_dir() 기반 절대경로로 변경
+  - High(H3): 지수 히스토리 list → deque(maxlen=400) 교체 (레이스 컨디션 방지)
+  - High(H4): _tick_log/_signal_history/_condition_log → deque(maxlen) 교체
+  - High(H5): SM 추적 종목 GetCommRealData 이중 호출 방지 (_sm_cached_price 캐싱)
+  - Fix(M1): REQ_DEPOSIT IPC 명령 split('^') 방어 코딩
+  - Fix(M2): _sync_routine 내 today 4회 중복 계산 → 1회 통합
+  - Fix(M4): DEFAULT_CONFIG에서 v9.x TickMonitor 데드 설정 제거 (config_manager.py)
+  - Fix(M5): 연말 마지막 영업일을 휴장일에 오등록하는 버그 제거 (market_calendar.py)
 [v10.3 수정사항 — 스코어 체계 전면 재설계]
   - Breaking: 단일 스코어(buy+danger 통합) → buy_score 단독 (DANGER 매도 완전 폐기)
   - Breaking: 6개 지표 합산 스코어 → 3가지 AND 조건 (매수비율 + 대량빈도 + 상대임계)
@@ -285,7 +296,7 @@ class SmartMoneyTracker:
 
         # ── 타이밍 ──
         self._start_ts = time.time()
-        self._signal_history = []
+        self._signal_history = deque(maxlen=100)  # [v10.4/H4] deque로 교체 (자동 잘라내기)
 
         # ── [v10.3 Fix] p90 임계값 캐싱 (매 틱 sorted() 방지) ──
         self._cached_big_threshold = self._big_tick_default
@@ -438,8 +449,6 @@ class SmartMoneyTracker:
             "tick_count": self._tick_count,
         }
         self._signal_history.append(snapshot)
-        if len(self._signal_history) > 100:
-            self._signal_history = self._signal_history[-100:]
 
     # ── UI 표시용 상태 반환 ──────────────────────────────────
     def get_status(self) -> dict:
@@ -482,7 +491,7 @@ class SmartMoneyManager:
         """
         self.config_mgr = config_mgr
         self._trackers = {}     # {code: SmartMoneyTracker}
-        self._tick_log = []     # UI 표시용 로그 (최근 200건)
+        self._tick_log = deque(maxlen=200)  # [v10.4/H4] deque로 교체 (자동 잘라내기)
         # [v10.1/H3] 재편입 쿨다운: {code: cooldown_expire_timestamp}
         self._cooldown_until = {}
         # [v10.1/M1] 키움 kiwoom 객체 참조 (watch 시 시총 조회용, TradingEngine에서 설정)
@@ -519,8 +528,6 @@ class SmartMoneyManager:
         logger.info(msg)
         entry = {"time": time.strftime("%H:%M:%S"), "msg": msg}
         self._tick_log.append(entry)
-        if len(self._tick_log) > 200:
-            self._tick_log = self._tick_log[-200:]
 
     # ── [v10.1/M1] 종목 무게 분류 ────────────────────────────
     def _classify_tier(self, code: str) -> str:
@@ -743,12 +750,12 @@ class TradingEngine(QMainWindow):
         self.kosdaq_rate = 0.0   # KOSDAQ 등락율(%)
         self.kosdaq_price = 0    # KOSDAQ 현재 지수
         # 지수 히스토리 (차트용, 당일 장중 1분봉 축적)
-        self._kospi_history = []   # [(timestamp, price, rate), ...]
-        self._kosdaq_history = []  # [(timestamp, price, rate), ...]
+        self._kospi_history = deque(maxlen=400)   # [v10.4/H3] deque로 교체
+        self._kosdaq_history = deque(maxlen=400)  # [v10.4/H3] deque로 교체
         self._kospi_history_last_min  = -1  # KOSPI 마지막 기록 분
         self._kosdaq_history_last_min = -1  # KOSDAQ 마지막 기록 분
         self._pending_sell_qty = {}
-        self._condition_log = []  # 조건식 편입 기록 (UI 표시용, 최근 200건)
+        self._condition_log = deque(maxlen=200)  # [v10.4/H4] deque로 교체
         self._bl_cache = {}       # {code: name} 블랙리스트 UI 표시용 캐시
         self._bl_tags = {}        # {code: "자동"/"수동"} 블랙리스트 등록 유형 태그
         self._traded_today = {}   # {code: {"name": str, "reason": str}} 당일 매매 완료 종목 (BL 모드 UI용)
@@ -925,9 +932,6 @@ class TradingEngine(QMainWindow):
             'reason': reason,
         }
         self._condition_log.append(entry)
-        # 최근 200건만 유지 (UI 표시용)
-        if len(self._condition_log) > 200:
-            self._condition_log = self._condition_log[-200:]
         # DB 영구 저장
         try:
             self.db.log_condition_signal(code, name, cond_name, result, reason)
@@ -1157,8 +1161,8 @@ class TradingEngine(QMainWindow):
 
         # ── 자정 P&L 리셋 (AWS 24시간 운영 대응) ──────────────────────────
         # today_realized_profit은 누적 합산이므로, 날짜가 바뀌면 DB에서 오늘 기준으로 재로드합니다.
+        # [v10.4/M2] today는 상단에서 이미 계산되었으므로 재사용
         try:
-            today = datetime.date.today().isoformat()
             if self._midnight_reset_date != today:
                 self._midnight_reset_date = today
                 new_profit = self.db.get_today_trade_summary().get('realized_profit', 0)
@@ -1188,7 +1192,7 @@ class TradingEngine(QMainWindow):
         # 8시 50분에 한 번 더 강제 재연결을 시도해 9시 장 시작에 대비합니다.
         try:
             now_dt = datetime.datetime.now()
-            today = datetime.date.today().isoformat()
+            # [v10.4/M2] today는 상단에서 이미 계산되었으므로 재사용
             if (now_dt.hour == 8 and now_dt.minute == 50
                     and self._pre_market_reconnect_date != today):
                 self._pre_market_reconnect_date = today  # 하루 1회만 실행
@@ -1203,8 +1207,8 @@ class TradingEngine(QMainWindow):
             logger.error(f"❌ [8:50 재연결] 오류: {e}")
 
         # [Fix #1] 장 마감 자동 리포트 & 종료 — shutdown_opt 무관하게 항상 리포트 먼저 전송
+        # [v10.4/M2] today는 상단에서 이미 계산되었으므로 재사용
         try:
-            today = datetime.date.today().isoformat()
             if self.calendar.is_eod_shutdown() and self._shutdown_report_sent_date != today:
                 self._shutdown_report_sent_date = today
                 logger.info("📊 [마감] 장 마감 감지 → 마감 리포트 전송")
@@ -1337,7 +1341,12 @@ class TradingEngine(QMainWindow):
     # ── IPC 명령 처리 ──────────────────────────────
     def _process_command(self, cmd, args):
         if cmd == "REQ_DEPOSIT":
-            self.account, pw = args.split('^')
+            # [v10.4/M1] split 안전성: '^'가 없거나 값이 부족한 경우 방어
+            parts = args.split('^', 1)
+            if len(parts) < 2:
+                logger.error(f"❌ [IPC] REQ_DEPOSIT 형식 오류: '{args}' (계좌^비밀번호 필요)")
+                return
+            self.account, pw = parts[0], parts[1]
             self.account_password = pw  # [Fix #2] 비밀번호를 인스턴스에 저장
 
             # [Fix #1] 실계좌 호환 - 비밀번호 + 매체구분 포함
@@ -1845,13 +1854,9 @@ class TradingEngine(QMainWindow):
                     if is_kospi and cur_min != self._kospi_history_last_min:
                         self._kospi_history_last_min = cur_min
                         self._kospi_history.append((ts_str, price, rate))
-                        if len(self._kospi_history) > 400:
-                            self._kospi_history = self._kospi_history[-400:]
                     elif not is_kospi and cur_min != self._kosdaq_history_last_min:
                         self._kosdaq_history_last_min = cur_min
                         self._kosdaq_history.append((ts_str, price, rate))
-                        if len(self._kosdaq_history) > 400:
-                            self._kosdaq_history = self._kosdaq_history[-400:]
 
                     label = "KOSPI" if is_kospi else "KOSDAQ"
                     logger.info(f"📊 [지수TR] {label} = {price:,.2f} ({rate:+.2f}%)")
@@ -2125,19 +2130,16 @@ class TradingEngine(QMainWindow):
                     if cur_min != self._kospi_history_last_min:
                         self._kospi_history_last_min = cur_min
                         self._kospi_history.append((ts_str, price, rate))
-                        if len(self._kospi_history) > 400:
-                            self._kospi_history = self._kospi_history[-400:]
                 else:
                     if cur_min != self._kosdaq_history_last_min:
                         self._kosdaq_history_last_min = cur_min
                         self._kosdaq_history.append((ts_str, price, rate))
-                        if len(self._kosdaq_history) > 400:
-                            self._kosdaq_history = self._kosdaq_history[-400:]
             except Exception as e:
                 logger.debug(f"[v8.0] 지수 데이터 파싱 오류 ({code}): {e}")
             return
       
         # [v10.0] SmartMoney 추적 종목: 체결 틱 & 호가잔량 전달
+        _sm_cached_price = 0  # [v10.4/H5] SM에서 파싱한 현재가 캐싱 (API 이중 호출 방지)
         if self.tick_monitor.is_watching(code):
             tracker = self.tick_monitor.get_tracker(code)
             if tracker is None:
@@ -2177,6 +2179,7 @@ class TradingEngine(QMainWindow):
                             pass
 
                     if tick_price > 0 and tick_vol > 0:
+                        _sm_cached_price = tick_price  # [v10.4/H5] fall-through용 캐싱
                         prev_sig = tracker.signal
                         tracker.on_tick(tick_price, tick_vol, is_buy_tick)
                         new_sig = tracker.signal
@@ -2343,7 +2346,8 @@ class TradingEngine(QMainWindow):
             return
 
         if real_type == "주식체결":
-            curr_p = abs(safe_int(self.kiwoom.dynamicCall("GetCommRealData(QString, int)", code, 10)))
+            # [v10.4/H5] SM 추적 중 이미 파싱한 가격이 있으면 재사용 (API 이중 호출 방지)
+            curr_p = _sm_cached_price if _sm_cached_price > 0 else abs(safe_int(self.kiwoom.dynamicCall("GetCommRealData(QString, int)", code, 10)))
             self.portfolio[code]['current_price'] = curr_p
             self.portfolio[code]['last_price_ts'] = time.time()
             data = self.portfolio[code]
@@ -2747,10 +2751,19 @@ class TradingEngine(QMainWindow):
                 self.unexecuted_orders[order_no]['qty'] = unexec
 
         if status == "취소" and "+매수" in buy_sell:
-            # [v10.3 Fix] 부분체결+잔량취소 시 locked_deposit 잠김 해소
-            # 기존: qty==0(전량취소)일 때만 locked 반환 → 부분체결 후 취소 시 잔량 금액이 잠김
-            # 수정: 취소된 미체결 잔량 금액을 무조건 차감 후, qty==0이면 포트폴리오도 삭제
-            cancelled_qty = unexec  # 취소 이벤트의 902(미체결수량) = 취소된 수량
+            # [v10.4 Fix/C1] 부분체결+잔량취소 시 locked_deposit 정확한 해소
+            # 키움 체잔 FID 902(미체결수량)는 '취소 이벤트 시점의 잔여 미체결 수량'입니다.
+            # - 전량취소: 902 = 원주문수량 (체결 없이 전부 취소)
+            # - 부분체결 후 취소: 902 = 0 (이미 체결 완료된 잔량은 미체결이 아님)
+            # 따라서 실제 취소된 수량은:
+            #   접수 시 미체결수량(원주문수량) - 누적체결수량 으로 역산합니다.
+            # unexec가 0이 아닌 경우는 키움이 '아직 취소 처리 안 된 잔량'을 보내는 것이므로
+            # 원주문 정보 기반으로 계산하는 것이 더 안전합니다.
+            orig_info = self.unexecuted_orders.get(order_no, {})
+            orig_qty = orig_info.get('qty', 0)  # 접수 시 미체결수량 (= 원주문수량)
+            cum_filled = self._order_exec_cum.get(order_no, 0)  # 누적 체결수량
+            cancelled_qty = max(0, orig_qty - cum_filled)
+
             if cancelled_qty > 0 and code in self.portfolio:
                 # 취소된 잔량의 예상 금액 = 현재가(또는 매수가) × 취소수량
                 est_price = self.portfolio[code].get('current_price') or self.portfolio[code].get('buy_price', 0)
@@ -2759,9 +2772,13 @@ class TradingEngine(QMainWindow):
                 if hasattr(self, '_orderable_from_tr') and self._orderable_from_tr > 0:
                     self.orderable_amount = max(0, self._orderable_from_tr - self.locked_deposit)
                 logger.info(
-                    f"🔓 [매수취소] {code} 미체결 {cancelled_qty}주 취소 → "
+                    f"🔓 [매수취소] {code} 취소 {cancelled_qty}주 "
+                    f"(원주문={orig_qty}, 체결={cum_filled}) → "
                     f"locked {unlock_amt:,}원 반환 (잔여 locked={self.locked_deposit:,})"
                 )
+            elif cancelled_qty == 0 and code in self.portfolio:
+                # 전량 체결 후 취소 이벤트 (이미 체결 처리 완료) → locked 조정 불필요
+                logger.debug(f"ℹ️ [매수취소] {code} 전량 체결 후 취소 이벤트 수신 (추가 처리 불필요)")
             if code in self.portfolio and self.portfolio[code]['qty'] == 0:
                 self.kiwoom.dynamicCall("SetRealRemove(QString, QString)", self.portfolio[code].get('screen_no', "ALL"), code)
                 del self.portfolio[code]
